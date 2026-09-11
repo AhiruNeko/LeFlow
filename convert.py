@@ -7,10 +7,10 @@ import stable_worldmodel as swm
 import os
 os.environ['STABLEWM_HOME'] = '/root/projects/pusht'
 
-src = Path(swm.data.utils.get_cache_dir(), "hf_pusht")
-out = Path(swm.data.utils.get_cache_dir(), "pusht", "lewm_object.ckpt")
+src = Path(swm.data.utils.get_cache_dir(), "checkpoints/pusht")
+out = Path(swm.data.utils.get_cache_dir(), "checkpoints/pusht", "latent_planner.ckpt")
 
-cfg = json.loads((src / "config.json").read_text())
+cfg = json.loads((src / "latent_planner_config.yaml").read_text())
 encoder = spt.backbone.utils.vit_hf(
     cfg["encoder"]["size"],
     patch_size=cfg["encoder"]["patch_size"],
@@ -33,7 +33,7 @@ model = JEPA(
     projector=mlp("projector"),
     pred_proj=mlp("pred_proj"),
 )
-sd = torch.load(src / "weights.pt", map_location="cpu", weights_only=False)
+sd = torch.load(src / "latent_planner.pt", map_location="cpu", weights_only=False)
 model.load_state_dict(sd, strict=True)
 out.parent.mkdir(parents=True, exist_ok=True)
 torch.save(model, out)

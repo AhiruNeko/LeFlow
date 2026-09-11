@@ -6,7 +6,7 @@ TASK_NAME="${FILE_NAME%.*}"
 LOG_FILE="logs/${TASK_NAME}_$(date +%Y%m%d_%H%M%S).log"
 exec > >(tee "$LOG_FILE") 2>&1
 
-export STABLEWM_HOME=/root/projects/pusht
+export STABLEWM_HOME=/root/autodl-tmp/pusht
 export HYDRA_FULL_ERROR=1
 
 conda run -n lewm --no-capture-output python train_latent_planner.py \

@@ -12,3 +12,5 @@ wandb/
 *.tar.zst
 *.zip
 .idea/
+eval_results/
+logs/
