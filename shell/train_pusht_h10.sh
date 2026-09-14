@@ -14,7 +14,7 @@ conda run -n lewm --no-capture-output python train_latent_planner.py \
   data.dataset.name=pusht_expert_train \
   data.dataset.keys_to_load='[pixels,action,proprio,state]' \
   data.dataset.keys_to_cache='[action,proprio,state]' \
-  planner.horizon=5 \
+  planner.horizon=10 \
   planner.max_horizon=20 \
   planner.action_block=5 \
   epochs=10 \
