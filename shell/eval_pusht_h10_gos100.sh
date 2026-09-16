@@ -12,10 +12,12 @@ export HYDRA_FULL_ERROR=1
 conda run -n lewm --no-capture-output python eval.py --config-name=pusht.yaml \
   solver=latent_flow \
   policy=leflow/pusht/latent_planner.pt \
-  plan_config.horizon=5 \
-  plan_config.receding_horizon=5 \
+  plan_config.horizon=10 \
+  plan_config.receding_horizon=10 \
   plan_config.action_block=5 \
-  eval.num_eval=50
+  eval.num_eval=50 \
+  eval.goal_offset_steps=100 \
+  eval.eval_budget=100
 
 mkdir -p /root/projects/LeFlow/eval_results/$TASK_NAME
 

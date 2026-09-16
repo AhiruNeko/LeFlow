@@ -15,7 +15,8 @@ conda run -n lewm --no-capture-output python eval.py --config-name=pusht.yaml \
   plan_config.horizon=5 \
   plan_config.receding_horizon=5 \
   plan_config.action_block=5 \
-  eval.num_eval=50
+  eval.num_eval=50 \
+  eval.goal_offset_steps=50
 
 mkdir -p /root/projects/LeFlow/eval_results/$TASK_NAME
 
