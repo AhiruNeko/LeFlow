@@ -197,8 +197,59 @@ class SinusoidalTimeEmbedding(nn.Module):
         return emb
 
 
+class ExperienceConditionedFlowBlock(nn.Module):
+    """Self-attention flow block augmented with experience cross-attention."""
+
+    def __init__(self, hidden_dim: int, heads: int, dropout: float):
+        super().__init__()
+        self.self_norm = nn.LayerNorm(hidden_dim)
+        self.cross_norm = nn.LayerNorm(hidden_dim)
+        self.ffn_norm = nn.LayerNorm(hidden_dim)
+        self.self_attn = nn.MultiheadAttention(
+            hidden_dim, heads, dropout=dropout, batch_first=True
+        )
+        self.cross_attn = nn.MultiheadAttention(
+            hidden_dim, heads, dropout=dropout, batch_first=True
+        )
+        self.ffn = nn.Sequential(
+            nn.Linear(hidden_dim, hidden_dim * 4),
+            nn.GELU(),
+            nn.Dropout(dropout),
+            nn.Linear(hidden_dim * 4, hidden_dim),
+            nn.Dropout(dropout),
+        )
+
+    def forward(
+        self,
+        x: torch.Tensor,
+        experience_keys: torch.Tensor | None,
+        experience_values: torch.Tensor | None,
+    ) -> torch.Tensor:
+        self_input = self.self_norm(x)
+        self_update, _ = self.self_attn(
+            self_input, self_input, self_input, need_weights=False
+        )
+        x = x + self_update
+        if experience_keys is not None:
+            cross_query = self.cross_norm(x)
+            cross_update, _ = self.cross_attn(
+                cross_query,
+                experience_keys,
+                experience_values,
+                need_weights=False,
+            )
+            x = x + cross_update
+        return x + self.ffn(self.ffn_norm(x))
+
+
 class LatentPathFlow(nn.Module):
-    """Rectified-flow velocity model for latent path interiors."""
+    """Rectified-flow model with cost-conditioned experience cross-attention.
+
+    ``path_features`` is an encoded sequence of prior candidate paths with
+    shape ``[B, N, path_feature_dim]``. Its paired ``path_costs[B, N]`` is
+    transformed into per-experience FiLM parameters that modulate *only* the
+    cross-attention values; keys remain pure retrieval/similarity features.
+    """
 
     def __init__(
         self,
@@ -208,14 +259,20 @@ class LatentPathFlow(nn.Module):
         max_horizon: int = 20,
         time_dim: int = 64,
         dropout: float = 0.0,
+        path_feature_dim: int = 256,
+        heads: int = 8,
     ):
         super().__init__()
+        if hidden_dim % heads:
+            raise ValueError("hidden_dim must be divisible by heads")
         self.latent_dim = latent_dim
         self.hidden_dim = hidden_dim
         self.max_horizon = max_horizon
         self.depth = depth
         self.time_dim = time_dim
         self.dropout = dropout
+        self.path_feature_dim = path_feature_dim
+        self.heads = heads
         self.pos_embedding = nn.Parameter(
             torch.randn(1, max_horizon - 1, hidden_dim) * 0.02
         )
@@ -228,17 +285,26 @@ class LatentPathFlow(nn.Module):
             nn.SiLU(),
             nn.Linear(hidden_dim, hidden_dim),
         )
-        enc_layer = nn.TransformerEncoderLayer(
-            d_model=hidden_dim,
-            nhead=8,
-            dim_feedforward=hidden_dim * 4,
-            dropout=dropout,
-            activation="gelu",
-            batch_first=True,
-            norm_first=True,
+        self.path_feature_proj = nn.Linear(path_feature_dim, hidden_dim)
+        self.cost_film = nn.Sequential(
+            nn.Linear(1, hidden_dim),
+            nn.SiLU(),
+            nn.Linear(hidden_dim, 2 * hidden_dim),
         )
-        self.net = nn.TransformerEncoder(enc_layer, num_layers=depth)
+        nn.init.zeros_(self.cost_film[-1].weight)
+        nn.init.zeros_(self.cost_film[-1].bias)
+        self.blocks = nn.ModuleList(
+            ExperienceConditionedFlowBlock(hidden_dim, heads, dropout)
+            for _ in range(depth)
+        )
         self.out = nn.Sequential(nn.LayerNorm(hidden_dim), nn.Linear(hidden_dim, latent_dim))
+
+    def _cost_conditioned_values(
+        self, path_features: torch.Tensor, path_costs: torch.Tensor
+    ) -> torch.Tensor:
+        values = self.path_feature_proj(path_features)
+        shift, scale = self.cost_film(path_costs[..., None].float()).chunk(2, dim=-1)
+        return values * (1 + scale) + shift
 
     def forward(
         self,
@@ -246,20 +312,33 @@ class LatentPathFlow(nn.Module):
         t: torch.Tensor,
         z_start: torch.Tensor,
         z_goal: torch.Tensor,
+        path_features: torch.Tensor | None = None,
+        path_costs: torch.Tensor | None = None,
     ) -> torch.Tensor:
         n_tokens = x_t.size(1)
         if n_tokens > self.max_horizon - 1:
             raise ValueError(
                 f"Requested {n_tokens + 1} horizon, but max_horizon={self.max_horizon}"
             )
-        cond = (
-            self.start_proj(z_start)
-            + self.goal_proj(z_goal)
-            + self.time_embed(t.float())
-        )
-        x = self.token_proj(x_t)
-        x = x + self.pos_embedding[:, :n_tokens] + cond[:, None]
-        return self.out(self.net(x))
+        if (path_features is None) != (path_costs is None):
+            raise ValueError("path_features and path_costs must be provided together")
+        if path_features is not None:
+            if path_features.ndim != 3 or path_features.shape[:2] != path_costs.shape:
+                raise ValueError("path_features=[B,N,F] and path_costs=[B,N] are required")
+            if path_features.size(0) != x_t.size(0):
+                raise ValueError("path feature batch size must match x_t")
+            if path_features.size(-1) != self.path_feature_dim:
+                raise ValueError("path feature dimension must match path_feature_dim")
+            experience_keys = self.path_feature_proj(path_features)
+            experience_values = self._cost_conditioned_values(path_features, path_costs)
+        else:
+            experience_keys = None
+            experience_values = None
+        cond = self.start_proj(z_start) + self.goal_proj(z_goal) + self.time_embed(t.float())
+        x = self.token_proj(x_t) + self.pos_embedding[:, :n_tokens] + cond[:, None]
+        for block in self.blocks:
+            x = block(x, experience_keys, experience_values)
+        return self.out(x)
 
 
 class InverseDynamics(nn.Module):
@@ -654,6 +733,8 @@ def checkpoint_payload(
                 "max_horizon": flow.max_horizon,
                 "time_dim": flow.time_dim,
                 "dropout": flow.dropout,
+                "path_feature_dim": flow.path_feature_dim,
+                "heads": flow.heads,
             },
             "inverse_dynamics": {
                 "latent_dim": inverse_dynamics.latent_dim,
