@@ -64,6 +64,24 @@ flow:
   depth: 4
   time_dim: 64
   dropout: 0.0
+  # Must equal the LTC trajectory_encoder.representation_dim.
+  path_feature_dim: 256
+  heads: 8
+
+# Phase-one same-task synthetic experience memory. LTC is loaded frozen;
+# only flow and inverse dynamics are optimized in this training stage.
+experience:
+  trajectory_encoder_checkpoint: ???
+  cost_model_checkpoint: ???
+  # One N is drawn uniformly from [min_size, max_size] per batch.
+  # N=0 bypasses cross-attention for that batch.
+  min_size: 0
+  max_size: 64
+  # Latent-noise scale; used for both memory path types.
+  noise_std: 0.10
+  # Probability of a path whose all states after z_0, including its endpoint,
+  # are noised. Otherwise only intermediate states are noised.
+  all_after_start_probability: 0.5
 
 inverse_dynamics:
   hidden_dim: 512

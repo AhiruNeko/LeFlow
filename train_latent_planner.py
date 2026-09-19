@@ -1,5 +1,6 @@
 import json
 from pathlib import Path
+from typing import Any
 
 import hydra
 import numpy as np
@@ -19,6 +20,7 @@ from latent_planner import (
     smoothness_loss,
     stablewm_cache_dir,
 )
+from latent_trajectory_cost import TrajectoryCostModel, TrajectoryEncoder
 from utils import get_column_normalizer, get_img_preprocessor
 
 
@@ -54,6 +56,149 @@ def freeze(module: torch.nn.Module) -> torch.nn.Module:
     module.eval()
     module.requires_grad_(False)
     return module
+
+
+def _checkpoint_load(path: str | Path) -> dict[str, Any]:
+    try:
+        return torch.load(path, map_location="cpu", weights_only=False)
+    except TypeError:  # PyTorch < 2.0
+        return torch.load(path, map_location="cpu")
+
+
+def load_ltc_components(
+    cfg: DictConfig, latent_dim: int, device: torch.device
+) -> tuple[TrajectoryEncoder, TrajectoryCostModel]:
+    """Load the separately saved LTC encoder and cost model."""
+    encoder_payload = _checkpoint_load(cfg.experience.trajectory_encoder_checkpoint)
+    cost_payload = _checkpoint_load(cfg.experience.cost_model_checkpoint)
+    if encoder_payload.get("component") != "trajectory_encoder":
+        raise ValueError("experience.trajectory_encoder_checkpoint is not an LTC encoder checkpoint")
+    if cost_payload.get("component") != "trajectory_cost":
+        raise ValueError("experience.cost_model_checkpoint is not an LTC cost checkpoint")
+
+    trajectory_encoder = TrajectoryEncoder(
+        latent_dim=latent_dim, **dict(encoder_payload["architecture"])
+    ).to(device)
+    trajectory_encoder.load_state_dict(encoder_payload["state_dict"], strict=True)
+    cost_model = TrajectoryCostModel(**dict(cost_payload["architecture"])).to(device)
+    cost_model.load_state_dict(cost_payload["state_dict"], strict=True)
+    return trajectory_encoder, cost_model
+
+
+def save_finetuned_ltc_components(
+    *,
+    run_dir: Path,
+    output_model_name: str,
+    epoch: int,
+    lewm_checkpoint: str,
+    trajectory_encoder: TrajectoryEncoder,
+    cost_model: TrajectoryCostModel,
+    cfg: DictConfig,
+) -> tuple[Path, Path]:
+    """Save fine-tuned LTC components in the same independently loadable format."""
+    encoder_arch = {
+        "max_horizon": trajectory_encoder.max_horizon,
+        "model_dim": trajectory_encoder.cls_token.size(-1),
+        "representation_dim": trajectory_encoder.representation_dim,
+        "depth": len(trajectory_encoder.blocks),
+        "heads": trajectory_encoder.blocks[0].attn.num_heads,
+        "mlp_dim": trajectory_encoder.blocks[0].mlp[0].out_features,
+        "dropout": trajectory_encoder.blocks[0].attn.dropout,
+    }
+    cost_arch = {
+        "representation_dim": cost_model.representation_dim,
+        "dropout": cost_model.network[3].p,
+    }
+    common = {
+        "format": "latent_trajectory_cost_component_v1",
+        "lewm_checkpoint": lewm_checkpoint,
+        "config": OmegaConf.to_container(cfg, resolve=True),
+    }
+    encoder_payload = common | {
+        "component": "trajectory_encoder",
+        "architecture": encoder_arch,
+        "state_dict": trajectory_encoder.state_dict(),
+    }
+    cost_payload = common | {
+        "component": "trajectory_cost",
+        "architecture": cost_arch,
+        "state_dict": cost_model.state_dict(),
+    }
+    encoder_path = run_dir / f"{output_model_name}_trajectory_encoder.pt"
+    cost_path = run_dir / f"{output_model_name}_cost_model.pt"
+    torch.save(encoder_payload, run_dir / f"{output_model_name}_trajectory_encoder_epoch_{epoch}.pt")
+    torch.save(cost_payload, run_dir / f"{output_model_name}_cost_model_epoch_{epoch}.pt")
+    torch.save(encoder_payload, encoder_path)
+    torch.save(cost_payload, cost_path)
+    return encoder_path, cost_path
+
+
+def noised_path_all_after_start(path: torch.Tensor, noise_std: float) -> torch.Tensor:
+    """Perturb every state after z_0, including the candidate endpoint."""
+    latent_scale = path.detach().std(unbiased=False).clamp_min(1e-6)
+    result = path.clone()
+    result[:, 1:] += torch.randn_like(result[:, 1:]) * (noise_std * latent_scale)
+    return result
+
+
+def noised_path_intermediate(path: torch.Tensor, noise_std: float) -> torch.Tensor:
+    """Perturb intermediate states only; preserve z_0 and the endpoint."""
+    if path.size(1) < 3:
+        raise ValueError("intermediate-noise experiences require at least three path states")
+    latent_scale = path.detach().std(unbiased=False).clamp_min(1e-6)
+    result = path.clone()
+    result[:, 1:-1] += torch.randn_like(result[:, 1:-1]) * (noise_std * latent_scale)
+    return result
+
+
+@torch.no_grad()
+def build_experience_bank(
+    *,
+    z_path: torch.Tensor,
+    trajectory_encoder: TrajectoryEncoder,
+    cost_model: TrajectoryCostModel,
+    cfg: DictConfig,
+) -> tuple[torch.Tensor | None, torch.Tensor | None]:
+    """Build a same-task, synthetic-noise experience bank for phase one.
+
+    Every memory trajectory is paired with the query's own start and true goal.
+    Half are expected to have all states after z_0 perturbed (including their
+    endpoint); the other half preserve their endpoint and perturb only the
+    intermediate states.  No expert positive path and no goal mismatch is put
+    into the memory, so the planner cannot retrieve its supervision target.
+    """
+    batch_size, _, latent_dim = z_path.shape
+    min_size = int(cfg.experience.min_size)
+    max_size = int(cfg.experience.max_size)
+    if min_size < 0 or max_size < min_size:
+        raise ValueError("experience sizes must satisfy 0 <= min_size <= max_size")
+    size = int(torch.randint(min_size, max_size + 1, (), device=z_path.device))
+    if size == 0:
+        return None, None
+
+    repeated_path = z_path[:, None].expand(-1, size, -1, -1).reshape(
+        batch_size * size, z_path.size(1), latent_dim
+    )
+    all_after_start = noised_path_all_after_start(
+        repeated_path, float(cfg.experience.noise_std)
+    )
+    intermediate_only = noised_path_intermediate(
+        repeated_path, float(cfg.experience.noise_std)
+    )
+    choose_all_after_start = torch.rand(
+        batch_size * size, device=z_path.device
+    ) < float(cfg.experience.all_after_start_probability)
+    candidate_paths = torch.where(
+        choose_all_after_start[:, None, None], all_after_start, intermediate_only
+    )
+    candidate_goals = z_path[:, -1, :].repeat_interleave(size, dim=0)
+
+    features = trajectory_encoder(candidate_paths, candidate_goals)
+    costs = cost_model(features)
+    return (
+        features.reshape(batch_size, size, -1),
+        costs.reshape(batch_size, size),
+    )
 
 
 def default_episode_split_path(cfg: DictConfig) -> Path:
@@ -164,31 +309,35 @@ def step_batch(
     lewm: torch.nn.Module,
     flow: LatentPathFlow,
     inverse_dynamics: InverseDynamics,
+    trajectory_encoder: TrajectoryEncoder,
+    cost_model: TrajectoryCostModel,
     cfg: DictConfig,
     device: torch.device,
 ) -> dict[str, torch.Tensor]:
+    """Train on an expert path while conditioning the flow on LTC experiences."""
     batch["action"] = torch.nan_to_num(batch["action"].to(device), 0.0)
     z_path = encode_latents(lewm, batch, device)
     actions = batch["action"][:, : cfg.planner.horizon]
+    path_features, path_costs = build_experience_bank(
+        z_path=z_path,
+        trajectory_encoder=trajectory_encoder,
+        cost_model=cost_model,
+        cfg=cfg,
+    )
 
-    loss_flow = flow_matching_loss(flow, z_path)
+    loss_flow = flow_matching_loss(
+        flow, z_path, path_features=path_features, path_costs=path_costs
+    )
     loss_inv, pred_actions = inverse_dynamics_loss(inverse_dynamics, z_path, actions)
-
     if cfg.loss.consistency.weight:
         if cfg.loss.consistency.detach_inverse:
             with torch.no_grad():
                 loss_dyn = lewm_consistency_loss(
-                    lewm,
-                    z_path,
-                    pred_actions.detach(),
-                    history_size=cfg.lewm_history_size,
+                    lewm, z_path, pred_actions.detach(), history_size=cfg.lewm_history_size
                 )
         else:
             loss_dyn = lewm_consistency_loss(
-                lewm,
-                z_path,
-                pred_actions,
-                history_size=cfg.lewm_history_size,
+                lewm, z_path, pred_actions, history_size=cfg.lewm_history_size
             )
     else:
         loss_dyn = z_path.new_tensor(0.0)
@@ -205,8 +354,15 @@ def step_batch(
         "inverse_loss": loss_inv.detach(),
         "consistency_loss": loss_dyn.detach(),
         "smoothness_loss": loss_smooth.detach(),
+        "experience_size": z_path.new_tensor(
+            0 if path_features is None else path_features.size(1)
+        ),
+        "experience_cost": (
+            z_path.new_zeros(())
+            if path_costs is None
+            else path_costs.detach().mean()
+        ),
     }
-
 
 @torch.no_grad()
 def validate(
@@ -215,11 +371,15 @@ def validate(
     lewm: torch.nn.Module,
     flow: LatentPathFlow,
     inverse_dynamics: InverseDynamics,
+    trajectory_encoder: TrajectoryEncoder,
+    cost_model: TrajectoryCostModel,
     cfg: DictConfig,
     device: torch.device,
 ) -> dict[str, float]:
     flow.eval()
     inverse_dynamics.eval()
+    trajectory_encoder.eval()
+    cost_model.eval()
     sums: dict[str, float] = {}
     count = 0
     for i, batch in enumerate(loader):
@@ -228,6 +388,8 @@ def validate(
             lewm=lewm,
             flow=flow,
             inverse_dynamics=inverse_dynamics,
+            trajectory_encoder=trajectory_encoder,
+            cost_model=cost_model,
             cfg=cfg,
             device=device,
         )
@@ -239,6 +401,8 @@ def validate(
             break
     flow.train()
     inverse_dynamics.train()
+    trajectory_encoder.eval()
+    cost_model.eval()
     return {k: v / max(count, 1) for k, v in sums.items()}
 
 
@@ -265,11 +429,19 @@ def run(cfg: DictConfig):
         action_dim=action_dim,
         **cfg.inverse_dynamics,
     ).to(device)
+    trajectory_encoder, cost_model = load_ltc_components(cfg, latent_dim, device)
+    if trajectory_encoder.representation_dim != flow.path_feature_dim:
+        raise ValueError(
+            "LTC representation_dim must equal flow.path_feature_dim; got "
+            f"{trajectory_encoder.representation_dim} and {flow.path_feature_dim}."
+        )
 
-    optimizer = torch.optim.AdamW(
-        list(flow.parameters()) + list(inverse_dynamics.parameters()),
-        **cfg.optimizer,
-    )
+    # Phase one keeps LTC fixed: it supplies a stable cost-conditioned memory
+    # representation while only the planner and inverse dynamics learn.
+    trajectory_encoder = freeze(trajectory_encoder)
+    cost_model = freeze(cost_model)
+    trainable_parameters = list(flow.parameters()) + list(inverse_dynamics.parameters())
+    optimizer = torch.optim.AdamW(trainable_parameters, **cfg.optimizer)
 
     run_dir = Path(stablewm_cache_dir(sub_folder="checkpoints"), cfg.subdir)
     run_dir.mkdir(parents=True, exist_ok=True)
@@ -282,12 +454,16 @@ def run(cfg: DictConfig):
             print(f"epoch={epoch + 1} train_start", flush=True)
             flow.train()
             inverse_dynamics.train()
+            trajectory_encoder.eval()
+            cost_model.eval()
             for batch_idx, batch in enumerate(train_loader):
                 out = step_batch(
                     batch=batch,
                     lewm=lewm,
                     flow=flow,
                     inverse_dynamics=inverse_dynamics,
+                    trajectory_encoder=trajectory_encoder,
+                    cost_model=cost_model,
                     cfg=cfg,
                     device=device,
                 )
@@ -296,7 +472,7 @@ def run(cfg: DictConfig):
                 grad_norm = None
                 if cfg.grad_clip_norm is not None:
                     grad_norm = torch.nn.utils.clip_grad_norm_(
-                        list(flow.parameters()) + list(inverse_dynamics.parameters()),
+                        trainable_parameters,
                         cfg.grad_clip_norm,
                     )
                 optimizer.step()
@@ -328,6 +504,8 @@ def run(cfg: DictConfig):
                 lewm=lewm,
                 flow=flow,
                 inverse_dynamics=inverse_dynamics,
+                trajectory_encoder=trajectory_encoder,
+                cost_model=cost_model,
                 cfg=cfg,
                 device=device,
             )
@@ -350,12 +528,31 @@ def run(cfg: DictConfig):
                 inverse_dynamics=inverse_dynamics,
                 cfg=OmegaConf.to_container(cfg, resolve=True),
             )
+            payload["experience"] = {
+                "trajectory_encoder_checkpoint": str(cfg.experience.trajectory_encoder_checkpoint),
+                "cost_model_checkpoint": str(cfg.experience.cost_model_checkpoint),
+                "trajectory_encoder_state_dict": trajectory_encoder.state_dict(),
+                "cost_model_state_dict": cost_model.state_dict(),
+            }
             epoch_path = run_dir / f"{cfg.output_model_name}_epoch_{epoch + 1}.pt"
             latest_path = run_dir / f"{cfg.output_model_name}.pt"
             print(f"epoch={epoch + 1} checkpoint_start path={epoch_path}", flush=True)
             torch.save(payload, epoch_path)
             torch.save(payload, latest_path)
-            print(f"epoch={epoch + 1} checkpoint_done path={latest_path}", flush=True)
+            encoder_path, cost_path = save_finetuned_ltc_components(
+                run_dir=run_dir,
+                output_model_name=cfg.output_model_name,
+                epoch=epoch + 1,
+                lewm_checkpoint=str(cfg.lewm_checkpoint),
+                trajectory_encoder=trajectory_encoder,
+                cost_model=cost_model,
+                cfg=cfg,
+            )
+            print(
+                f"epoch={epoch + 1} checkpoint_done path={latest_path} "
+                f"encoder={encoder_path} cost={cost_path}",
+                flush=True,
+            )
             if wandb_run is not None and cfg.wandb.log_model:
                 wandb_run.save(str(latest_path), base_path=str(run_dir))
     finally:

@@ -668,6 +668,8 @@ class LearnedLatentPathSolver:
 def flow_matching_loss(
     flow: LatentPathFlow,
     z_path: torch.Tensor,
+    path_features: torch.Tensor | None = None,
+    path_costs: torch.Tensor | None = None,
     generator: torch.Generator | None = None,
 ) -> torch.Tensor:
     z_start = z_path[:, 0]
@@ -676,7 +678,14 @@ def flow_matching_loss(
     noise = torch.randn(target.shape, device=target.device, dtype=target.dtype, generator=generator)
     t = torch.rand(z_path.size(0), device=z_path.device, dtype=z_path.dtype, generator=generator)
     x_t = (1 - t[:, None, None]) * noise + t[:, None, None] * target
-    pred_v = flow(x_t, t, z_start, z_goal)
+    pred_v = flow(
+        x_t,
+        t,
+        z_start,
+        z_goal,
+        path_features=path_features,
+        path_costs=path_costs,
+    )
     return F.mse_loss(pred_v, target - noise)
 
 
