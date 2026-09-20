@@ -114,6 +114,37 @@ def train_step(batch, runtime, enc, cost, sigreg, cfg, device, gen):
     total = float(cfg.loss.flow.weight) * flow + float(cfg.loss.inverse.weight) * inv + float(cfg.loss.consistency.weight) * cons + float(cfg.loss.ltc.weight) * ltc + float(cfg.loss.sigreg.weight) * reg
     return {'loss': total, 'flow_loss': flow.detach(), 'inverse_loss': inv.detach(), 'consistency_loss': cons.detach(), 'ltc_loss': ltc.detach(), 'static_ltc_loss': static_ltc.detach(), 'dynamic_ltc_loss': dynamic_ltc.detach(), 'dynamic_cost': dynamic_cost, 'dynamic_rollout_distance': dynamic_distance, 'sigreg_loss': reg.detach(), 'snapshot_round': path.new_tensor(snap), 'memory_size': path.new_tensor(0 if bank is None else bank.size(1)), **metrics}
 
+def save_step_checkpoint(outdir, step, source, runtime, enc, cost, cfg):
+    """Save independently loadable planner and LTC components mid-epoch."""
+    stem = f"{cfg.output_model_name}_step_{step}"
+    payload = checkpoint_payload(
+        lewm_checkpoint=str(source['lewm_checkpoint']),
+        action_block=runtime.action_block,
+        flow=runtime.flow,
+        inverse_dynamics=runtime.inverse_dynamics,
+        cfg=OmegaConf.to_container(cfg, resolve=True),
+    )
+    payload['experience'] = {
+        'phase': 'closed_loop_fine_tuning',
+        'trajectory_encoder_state_dict': enc.state_dict(),
+        'cost_model_state_dict': cost.state_dict(),
+    }
+    planner_path = outdir / f"{stem}.pt"
+    torch.save(payload, planner_path)
+    encoder_path, cost_path = save_finetuned_ltc_components(
+        run_dir=outdir,
+        output_model_name=stem,
+        epoch=step,
+        lewm_checkpoint=str(source['lewm_checkpoint']),
+        trajectory_encoder=enc,
+        cost_model=cost,
+        cfg=cfg,
+    )
+    print(
+        f"step={step} checkpoint_done planner={planner_path} "
+        f"encoder={encoder_path} cost={cost_path}",
+        flush=True,
+    )
 @hydra.main(version_base=None, config_path='./config/train', config_name='fine_tuning')
 def run(cfg: DictConfig):
     torch.manual_seed(int(cfg.seed))
@@ -160,7 +191,16 @@ def run(cfg: DictConfig):
                     if norm is not None:
                         log['train/grad_norm'] = float(norm)
                     wb.log(log, step=step)
-                if cfg.max_train_batches is not None and i + 1 >= int(cfg.max_train_batches):
+                checkpoint_interval = cfg.get('checkpoint_interval_steps')
+                if (
+                    checkpoint_interval is not None
+                    and step % int(checkpoint_interval) == 0
+                ):
+                    save_step_checkpoint(outdir, step, source, runtime, enc, cost, cfg)
+                if (
+                    cfg.max_train_batches is not None
+                    and i + 1 >= int(cfg.max_train_batches)
+                ):
                     break
             payload = checkpoint_payload(lewm_checkpoint=str(source['lewm_checkpoint']), action_block=runtime.action_block, flow=runtime.flow, inverse_dynamics=runtime.inverse_dynamics, cfg=OmegaConf.to_container(cfg, resolve=True))
             payload['experience'] = {'phase': 'closed_loop_fine_tuning', 'trajectory_encoder_checkpoint': str(cfg.experience.trajectory_encoder_checkpoint), 'cost_model_checkpoint': str(cfg.experience.cost_model_checkpoint), 'trajectory_encoder_state_dict': enc.state_dict(), 'cost_model_state_dict': cost.state_dict()}

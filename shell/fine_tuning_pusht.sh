@@ -30,6 +30,8 @@ conda run -n lewm --no-capture-output python fine_tuning.py \
   collection.max_size=64 \
   dynamic_ltc.sample_size=8 \
   dynamic_ltc.weight=0.5 \
-  epochs=10 \
+  epochs=1 \
+  max_train_batches=5000 \
+  checkpoint_interval_steps=500 \
   loader.batch_size=32 \
   subdir=latent_planner_finetune/pusht_h10_phase2
