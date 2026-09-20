@@ -13,6 +13,8 @@ import torch.nn.functional as F
 
 import stable_worldmodel as swm
 
+from latent_trajectory_cost import TrajectoryCostModel, TrajectoryEncoder
+
 
 def stablewm_cache_dir(sub_folder: str | None = None) -> Path:
     try:
@@ -52,6 +54,35 @@ def _resolve_checkpoint(path_or_name: str | Path) -> Path:
         return object_path
 
     raise FileNotFoundError(f"Could not resolve checkpoint: {path_or_name}")
+
+
+def load_ltc_components_for_evaluation(
+    trajectory_encoder_checkpoint: str | Path,
+    cost_model_checkpoint: str | Path,
+    *,
+    latent_dim: int,
+    device: torch.device,
+) -> tuple[TrajectoryEncoder, TrajectoryCostModel]:
+    """Load the separately checkpointed, frozen LTC modules for evaluation."""
+    encoder_payload = torch.load(
+        trajectory_encoder_checkpoint, map_location="cpu", weights_only=False
+    )
+    cost_payload = torch.load(
+        cost_model_checkpoint, map_location="cpu", weights_only=False
+    )
+    if encoder_payload.get("component") != "trajectory_encoder":
+        raise ValueError("trajectory_encoder_checkpoint is not an LTC encoder checkpoint")
+    if cost_payload.get("component") != "trajectory_cost":
+        raise ValueError("cost_model_checkpoint is not an LTC cost checkpoint")
+    encoder = TrajectoryEncoder(
+        latent_dim=latent_dim, **dict(encoder_payload["architecture"])
+    ).to(device)
+    cost_model = TrajectoryCostModel(**dict(cost_payload["architecture"])).to(device)
+    encoder.load_state_dict(encoder_payload["state_dict"], strict=True)
+    cost_model.load_state_dict(cost_payload["state_dict"], strict=True)
+    encoder.eval().requires_grad_(False)
+    cost_model.eval().requires_grad_(False)
+    return encoder, cost_model
 
 
 def load_lewm(lewm_checkpoint: str | Path) -> nn.Module:
@@ -440,8 +471,14 @@ class LatentPlannerRuntime(nn.Module):
         horizon: int,
         num_samples: int,
         flow_steps: int,
+        path_features: torch.Tensor | None = None,
+        path_costs: torch.Tensor | None = None,
         generator: torch.Generator | None = None,
     ) -> torch.Tensor:
+        if (path_features is None) != (path_costs is None):
+            raise ValueError("path_features and path_costs must be provided together")
+        if path_features is not None and path_features.size(0) != z_start.size(0):
+            raise ValueError("experience batch size must match z_start batch size")
         b, d = z_start.shape
         n = b * num_samples
         z0 = z_start[:, None].expand(b, num_samples, d).reshape(n, d)
@@ -457,10 +494,158 @@ class LatentPlannerRuntime(nn.Module):
         dt = 1.0 / max(flow_steps, 1)
         for i in range(flow_steps):
             t = torch.full((n,), i * dt, device=z_start.device, dtype=z_start.dtype)
-            x = x + self.flow(x, t, z0, zg) * dt
+            expanded_features = (
+                path_features.repeat_interleave(num_samples, dim=0)
+                if path_features is not None
+                else None
+            )
+            expanded_costs = (
+                path_costs.repeat_interleave(num_samples, dim=0)
+                if path_costs is not None
+                else None
+            )
+            x = x + self.flow(
+                x,
+                t,
+                z0,
+                zg,
+                path_features=expanded_features,
+                path_costs=expanded_costs,
+            ) * dt
         start = z0[:, None]
         goal = zg[:, None]
         return torch.cat([start, x, goal], dim=1).reshape(b, num_samples, horizon + 1, d)
+
+    @torch.no_grad()
+    def plan_experience_guided(
+        self,
+        info_dict: dict,
+        *,
+        trajectory_encoder: TrajectoryEncoder,
+        cost_model: TrajectoryCostModel,
+        horizon: int,
+        samples_per_round: int,
+        rounds: int,
+        experience_max_size: int,
+        top_k: int,
+        cost_threshold: float | None,
+        flow_steps: int,
+        history_size: int = 3,
+        generator: torch.Generator | None = None,
+    ) -> dict[str, torch.Tensor]:
+        """Generate candidate paths over multiple FIFO-memory flow rounds.
+
+        LTC costs choose a small candidate set only.  The final action plan is
+        selected independently by the original LeFlow inverse-dynamics + LeWM
+        rollout-to-goal score, so an LTC calibration error cannot directly
+        become the executed action.
+        """
+        if samples_per_round < 1 or rounds < 1:
+            raise ValueError("samples_per_round and rounds must both be positive")
+        if experience_max_size < 0 or top_k < 1:
+            raise ValueError("experience_max_size must be >= 0 and top_k must be positive")
+        if trajectory_encoder.representation_dim != self.flow.path_feature_dim:
+            raise ValueError(
+                "LTC representation_dim must equal the flow path_feature_dim"
+            )
+
+        z_start, z_goal = self.encode_current_and_goal(info_dict)
+        batch_size = z_start.size(0)
+        memory_features: torch.Tensor | None = None
+        memory_costs: torch.Tensor | None = None
+        top_paths: torch.Tensor | None = None
+        top_costs: torch.Tensor | None = None
+        rounds_used = 0
+
+        for round_index in range(rounds):
+            candidates = self.sample_paths(
+                z_start,
+                z_goal,
+                horizon=horizon,
+                num_samples=samples_per_round,
+                flow_steps=flow_steps,
+                path_features=memory_features,
+                path_costs=memory_costs,
+                generator=generator,
+            )
+            flat_paths = candidates.flatten(0, 1)
+            flat_goals = z_goal[:, None].expand(
+                batch_size, samples_per_round, -1
+            ).reshape(-1, z_goal.size(-1))
+            candidate_features = trajectory_encoder(flat_paths, flat_goals).reshape(
+                batch_size, samples_per_round, -1
+            )
+            candidate_costs = cost_model(candidate_features.flatten(0, 1)).reshape(
+                batch_size, samples_per_round
+            )
+
+            # FIFO memory contains only paths generated for this same
+            # start/goal condition.  The newest candidates replace the oldest.
+            if experience_max_size:
+                appended_features = (
+                    candidate_features
+                    if memory_features is None
+                    else torch.cat([memory_features, candidate_features], dim=1)
+                )
+                appended_costs = (
+                    candidate_costs
+                    if memory_costs is None
+                    else torch.cat([memory_costs, candidate_costs], dim=1)
+                )
+                memory_features = appended_features[:, -experience_max_size:]
+                memory_costs = appended_costs[:, -experience_max_size:]
+
+            candidate_pool = candidates if top_paths is None else torch.cat(
+                [top_paths, candidates], dim=1
+            )
+            cost_pool = candidate_costs if top_costs is None else torch.cat(
+                [top_costs, candidate_costs], dim=1
+            )
+            keep = min(top_k, cost_pool.size(1))
+            top_costs, top_index = torch.topk(
+                cost_pool, k=keep, dim=1, largest=False, sorted=True
+            )
+            gather_index = top_index[:, :, None, None].expand(
+                -1, -1, candidate_pool.size(2), candidate_pool.size(3)
+            )
+            top_paths = candidate_pool.gather(1, gather_index)
+            rounds_used = round_index + 1
+
+            # A batch must be collectively good enough before stopping.  This
+            # retains the vectorized policy interface without starving harder
+            # environments of their remaining sampling rounds.
+            # Do not allow threshold-based termination before a full top-k
+            # candidate set exists. In particular, when fewer than top_k
+            # paths are sampled in the first round, its mean is not yet the
+            # requested top-k mean.
+            if (
+                cost_threshold is not None
+                and top_costs.size(1) == top_k
+                and bool((top_costs.mean(dim=1) <= cost_threshold).all())
+            ):
+                break
+
+        assert top_paths is not None and top_costs is not None
+        top_actions = self.decode_actions(top_paths)
+        rollout_final = self.rollout_final_latent(
+            z_start, top_actions, history_size=history_size
+        )
+        rollout_goal_costs = F.mse_loss(
+            rollout_final,
+            z_goal[:, None].expand_as(rollout_final),
+            reduction="none",
+        ).mean(dim=-1)
+        best = rollout_goal_costs.argmin(dim=1)
+        batch_index = torch.arange(batch_size, device=self.device)
+        return {
+            "actions": top_actions[batch_index, best].detach().cpu(),
+            "costs": rollout_goal_costs[batch_index, best].detach().cpu(),
+            "goal_costs": rollout_goal_costs.detach().cpu(),
+            "experience_top_costs": top_costs.detach().cpu(),
+            "rounds_used": torch.full(
+                (batch_size,), rounds_used, device=self.device, dtype=torch.long
+            ).cpu(),
+        }
 
     def decode_actions(self, paths: torch.Tensor) -> torch.Tensor:
         z_t = paths[..., :-1, :]
@@ -661,6 +846,92 @@ class LearnedLatentPathSolver:
             "actions": torch.cat(all_actions, dim=0),
             "costs": torch.cat(all_costs, dim=0).tolist(),
             "goal_costs": torch.cat(all_goal_costs, dim=0),
+            "rollout_count": self.model.rollout_count,
+        }
+
+
+class ExperienceGuidedLatentPathSolver(LearnedLatentPathSolver):
+    """FIFO experience-guided multi-round flow sampler for evaluation."""
+
+    def __init__(
+        self,
+        *,
+        rounds: int = 4,
+        samples_per_round: int = 16,
+        experience_max_size: int = 64,
+        top_k: int = 8,
+        cost_threshold: float | None = 1.0,
+        trajectory_encoder_checkpoint: str | Path | None = None,
+        cost_model_checkpoint: str | Path | None = None,
+        **kwargs: Any,
+    ):
+        super().__init__(num_samples=samples_per_round, **kwargs)
+        if rounds < 1:
+            raise ValueError("rounds must be positive")
+        payload = torch.load(
+            _resolve_checkpoint(self.checkpoint), map_location="cpu", weights_only=False
+        )
+        experience = payload.get("experience", {})
+        encoder_path = trajectory_encoder_checkpoint or experience.get(
+            "trajectory_encoder_checkpoint"
+        )
+        cost_path = cost_model_checkpoint or experience.get("cost_model_checkpoint")
+        if not encoder_path or not cost_path:
+            raise ValueError(
+                "Experience-guided evaluation requires LTC checkpoints, either "
+                "in the planner checkpoint experience metadata or solver config."
+            )
+        self.trajectory_encoder, self.cost_model = load_ltc_components_for_evaluation(
+            encoder_path,
+            cost_path,
+            latent_dim=self.model.flow.latent_dim,
+            device=self.device,
+        )
+        if self.trajectory_encoder.representation_dim != self.model.flow.path_feature_dim:
+            raise ValueError(
+                "LTC representation_dim does not match the planner checkpoint "
+                "flow.path_feature_dim."
+            )
+        self.rounds = rounds
+        self.samples_per_round = samples_per_round
+        self.experience_max_size = experience_max_size
+        self.top_k = top_k
+        self.cost_threshold = cost_threshold
+
+    @torch.inference_mode()
+    def solve(self, info_dict: dict, init_action: torch.Tensor | None = None) -> dict:
+        del init_action
+        total_envs = len(next(iter(info_dict.values())))
+        all_actions, all_costs, all_goal_costs = [], [], []
+        all_experience_costs, all_rounds = [], []
+        for start in range(0, total_envs, self.batch_size):
+            end = min(start + self.batch_size, total_envs)
+            batch = {key: value[start:end] for key, value in info_dict.items()}
+            out = self.model.plan_experience_guided(
+                batch,
+                trajectory_encoder=self.trajectory_encoder,
+                cost_model=self.cost_model,
+                horizon=self.horizon,
+                samples_per_round=self.samples_per_round,
+                rounds=self.rounds,
+                experience_max_size=self.experience_max_size,
+                top_k=self.top_k,
+                cost_threshold=self.cost_threshold,
+                flow_steps=self.flow_steps,
+                history_size=self.history_size,
+                generator=self.torch_gen,
+            )
+            all_actions.append(out["actions"])
+            all_costs.append(out["costs"])
+            all_goal_costs.append(out["goal_costs"])
+            all_experience_costs.append(out["experience_top_costs"])
+            all_rounds.append(out["rounds_used"])
+        return {
+            "actions": torch.cat(all_actions, dim=0),
+            "costs": torch.cat(all_costs, dim=0).tolist(),
+            "goal_costs": torch.cat(all_goal_costs, dim=0),
+            "experience_top_costs": torch.cat(all_experience_costs, dim=0),
+            "experience_rounds_used": torch.cat(all_rounds, dim=0),
             "rollout_count": self.model.rollout_count,
         }
 

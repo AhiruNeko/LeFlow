@@ -116,6 +116,7 @@ def run(cfg: DictConfig):
         solver_target = cfg.solver.get("_target_", "")
         if solver_target in {
             "latent_planner.LearnedLatentPathSolver",
+            "latent_planner.ExperienceGuidedLatentPathSolver",
             "action_flow_planner.LearnedActionFlowSolver",
         }:
             solver = hydra.utils.instantiate(cfg.solver)

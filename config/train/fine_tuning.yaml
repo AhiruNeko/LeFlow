@@ -1,0 +1,113 @@
+defaults:
+  - _self_
+
+# Phase-one, experience-conditioned planner checkpoint.
+planner_checkpoint: ???
+
+output_model_name: fine_tuned_latent_planner
+subdir: latent_planner_finetune/closed_loop_h10
+
+seed: 3072
+device: cuda
+img_size: 224
+train_split: 0.9
+epochs: 10
+log_interval: 50
+max_train_batches: null
+grad_clip_norm: 1.0
+lewm_history_size: 3
+
+wandb:
+  enabled: true
+  project: lewm-latent-planner-finetune
+  entity: null
+  name: fine_tuned_latent_planner_h10
+  id: null
+  resume: allow
+  mode: online
+  log_model: false
+
+loader:
+  batch_size: 32
+  num_workers: 6
+  persistent_workers: true
+  prefetch_factor: 3
+  pin_memory: true
+
+episode_split:
+  enabled: false
+  train_fraction: 0.8
+  seed: 3072
+  split_file: null
+
+data:
+  dataset:
+    name: pusht
+    # One latent transition represents this many raw environment actions.
+    frameskip: 5
+    # H=10 requires 11 latent states: z_0 ... z_10.
+    num_steps: 11
+    keys_to_load:
+      - pixels
+      - action
+      - proprio
+    keys_to_cache:
+      - action
+      - proprio
+
+planner:
+  horizon: 10
+  action_block: 5
+
+# No-gradient candidate collection, separate for every expert start/goal pair.
+# 4 paths × 16 rounds fills the 64-entry FIFO capacity.
+collection:
+  samples_per_round: 4
+  rounds: 16
+  flow_steps: 16
+  max_size: 64
+
+experience:
+  trajectory_encoder_checkpoint: ???
+  cost_model_checkpoint: ???
+
+# These negatives are NOT placed in the Cross-Attention experience FIFO.
+# They retain the original LTC preference calibration while the planner and
+# shared Encoder are fine-tuned on dynamically generated experience paths.
+ltc:
+  beta: 0.1
+  goal_mismatch_weight: 1.0
+  noise_weight: 1.0
+  noise_std: 0.10
+
+# Sparse real-rollout calibration from the final collected FIFO bank.
+dynamic_ltc:
+  weight: 0.5
+  sample_size: 8
+  # Ignore nearly tied rollout outcomes when creating pairwise labels.
+  label_margin: 0.001
+
+loss:
+  flow:
+    weight: 1.0
+  inverse:
+    weight: 1.0
+  consistency:
+    weight: 0.1
+  ltc:
+    weight: 1.0
+  # Off by default. Enable only as an explicit representation regularization
+  # ablation after the closed-loop baseline is stable.
+  sigreg:
+    weight: 0.0
+    kwargs:
+      knots: 17
+      num_proj: 1024
+
+# Encoder receives both planner and LTC gradients. Cost Model is updated only
+# through LTC loss, because scalar costs are detached before FiLM conditioning.
+optimizer:
+  planner_lr: 1.0e-5
+  encoder_lr: 1.0e-6
+  cost_lr: 1.0e-6
+  weight_decay: 1.0e-4
