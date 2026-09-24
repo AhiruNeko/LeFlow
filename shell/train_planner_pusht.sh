@@ -6,11 +6,11 @@ TASK_NAME="${FILE_NAME%.*}"
 LOG_FILE="logs/${TASK_NAME}_$(date +%Y%m%d_%H%M%S).log"
 exec > >(tee "$LOG_FILE") 2>&1
 
-export STABLEWM_HOME=/root/projects/pusht
+export STABLEWM_HOME=/root/autodl-tmp/pusht
 export HYDRA_FULL_ERROR=1
 
-# Train this path-only, sigmoid-bounded LTC checkpoint before launching.
-LTC_DIR="${STABLEWM_HOME}/latent_trajectory_cost/pusht_h10_pathonly_sigmoid"
+# Train this state-plus-goal-delta, sigmoid-bounded LTC checkpoint before launching.
+LTC_DIR="${STABLEWM_HOME}/latent_planner/pusht_h10_ep10"
 ORIGINAL_PLANNER="${STABLEWM_HOME}/leflow/pusht/latent_planner_h10.pt"
 
 conda run -n lewm --no-capture-output python train_latent_planner.py \

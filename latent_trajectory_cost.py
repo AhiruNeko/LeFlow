@@ -84,9 +84,9 @@ class TrajectoryEncoder(nn.Module):
         self.max_horizon = max_horizon
         self.representation_dim = representation_dim
 
-        # Tokens contain only the path states. The task goal remains available
-        # through goal_proj and modulates every Transformer block via AdaLN.
-        self.input_proj = nn.Linear(latent_dim, model_dim)
+        # Each token explicitly carries both its state and its displacement to
+        # the true goal. AdaLN additionally supplies the goal globally.
+        self.input_proj = nn.Linear(2 * latent_dim, model_dim)
         self.goal_proj = nn.Sequential(
             nn.Linear(latent_dim, model_dim),
             nn.SiLU(),
@@ -117,8 +117,9 @@ class TrajectoryEncoder(nn.Module):
         """Return ``representation[B, representation_dim]``.
 
         ``path`` is ``[B, T, latent_dim]`` and may contain up to
-        ``max_horizon + 1`` latent-state tokens.  ``goal`` is the true task
-        goal, not the candidate path endpoint.
+        ``max_horizon + 1`` latent-state tokens. Each token is represented as
+        ``[z_t; z_goal - z_t]``. ``goal`` is the true task goal, not the
+        candidate path endpoint.
         """
         if path.ndim != 3 or goal.ndim != 2:
             raise ValueError("path must be [B, T, D] and goal must be [B, D]")
@@ -130,7 +131,8 @@ class TrajectoryEncoder(nn.Module):
         if padding_mask is not None and padding_mask.shape != (batch, steps):
             raise ValueError("padding_mask must have shape [B, T]")
 
-        x = self.input_proj(path)
+        relative_goal = goal[:, None, :] - path
+        x = self.input_proj(torch.cat((path, relative_goal), dim=-1))
         x = torch.cat((self.cls_token.expand(batch, -1, -1), x), dim=1)
         x = x + self.position[:, : steps + 1]
 
@@ -149,7 +151,7 @@ class TrajectoryEncoder(nn.Module):
     def from_checkpoint_architecture(
         cls, *, latent_dim: int, architecture: dict[str, object]
     ) -> "TrajectoryEncoder":
-        """Build the fixed path-only encoder from checkpoint metadata."""
+        """Build the fixed state-plus-goal-delta encoder from checkpoint metadata."""
         return cls(latent_dim=latent_dim, **dict(architecture))
 
 class TrajectoryCostModel(nn.Module):

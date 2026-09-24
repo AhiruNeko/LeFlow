@@ -9,8 +9,8 @@ exec > >(tee "$LOG_FILE") 2>&1
 export STABLEWM_HOME=/root/projects/pusht
 export HYDRA_FULL_ERROR=1
 
-# Requires a newly trained path-only, sigmoid-bounded H=10 LTC checkpoint.
-LTC_DIR="${STABLEWM_HOME}/latent_trajectory_cost/pusht_h10_pathonly_sigmoid"
+# Requires a newly trained state-plus-goal-delta, sigmoid-bounded H=10 LTC checkpoint.
+LTC_DIR="${STABLEWM_HOME}/latent_trajectory_cost/pusht_h10_delta_sigmoid"
 ORIGINAL_PLANNER="${STABLEWM_HOME}/leflow/pusht/latent_planner_h10.pt"
 
 conda run -n lewm --no-capture-output python train_latent_planner.py \
