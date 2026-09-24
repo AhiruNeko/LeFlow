@@ -15,19 +15,14 @@ exec > >(tee "${LOG_FILE}") 2>&1
 export STABLEWM_HOME=/root/projects/pusht
 export HYDRA_FULL_ERROR=1
 
-# Phase-two fine-tuned planner and jointly fine-tuned LTC components.
-PLANNER_DIR="${STABLEWM_HOME}/latent_planner_finetune/pusht_h10_phase2"
-PLANNER_CHECKPOINT="${PLANNER_DIR}/fine_tuned_latent_planner.pt"
-TRAJECTORY_ENCODER_CHECKPOINT="${PLANNER_DIR}/fine_tuned_latent_planner_trajectory_encoder.pt"
-COST_MODEL_CHECKPOINT="${PLANNER_DIR}/fine_tuned_latent_planner_cost_model.pt"
+# Unified planner checkpoint: it embeds frozen IDM and the jointly trained LTC.
+PLANNER_DIR="${STABLEWM_HOME}/latent_planner_unified/pusht_h10"
+PLANNER_CHECKPOINT="${PLANNER_DIR}/unified_latent_planner.pt"
 RESULT_FILE="${TASK_NAME}_${RUN_ID}_results.txt"
 ARTIFACT_MARKER="${PLANNER_DIR}/.${TASK_NAME}_${RUN_ID}.start"
 touch "${ARTIFACT_MARKER}"
 
-for CHECKPOINT in \
-  "${PLANNER_CHECKPOINT}" \
-  "${TRAJECTORY_ENCODER_CHECKPOINT}" \
-  "${COST_MODEL_CHECKPOINT}"; do
+for CHECKPOINT in "${PLANNER_CHECKPOINT}"; do
   if [ ! -f "${CHECKPOINT}" ]; then
     echo "Missing checkpoint: ${CHECKPOINT}" >&2
     exit 1
@@ -40,8 +35,6 @@ conda run -n lewm --no-capture-output python eval.py --config-name=pusht.yaml \
   plan_config.horizon=10 \
   plan_config.receding_horizon=10 \
   plan_config.action_block=5 \
-  solver.trajectory_encoder_checkpoint="${TRAJECTORY_ENCODER_CHECKPOINT}" \
-  solver.cost_model_checkpoint="${COST_MODEL_CHECKPOINT}" \
   eval.num_eval=50 \
   output.filename="${RESULT_FILE}"
 
@@ -59,10 +52,6 @@ fi
 rm -f "${ARTIFACT_MARKER}"
 
 cp "${BASH_SOURCE[0]}" "${RESULT_DIR}/command.sh"
-printf 'planner_checkpoint=%s\ntrajectory_encoder_checkpoint=%s\ncost_model_checkpoint=%s\n' \
-  "${PLANNER_CHECKPOINT}" \
-  "${TRAJECTORY_ENCODER_CHECKPOINT}" \
-  "${COST_MODEL_CHECKPOINT}" \
-  > "${RESULT_DIR}/checkpoints.txt"
+printf 'planner_checkpoint=%s\n' "${PLANNER_CHECKPOINT}" > "${RESULT_DIR}/checkpoints.txt"
 
 echo "Archived evaluation artifacts to: ${RESULT_DIR}"

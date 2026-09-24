@@ -30,9 +30,22 @@ trajectory_encoder:
   mlp_dim: 1024
   dropout: 0.1
 
+cost_model:
+  # The lower-is-better score is calibrated to the closed interval [0, 1].
+  output_activation: sigmoid
+
 preference:
-  # L = softplus(-(c_negative - c_positive) / beta)
-  beta: 0.1
+  # L = softplus(-(c_negative - c_positive) / beta). With a bounded margin,
+  # 0.2 avoids saturation before paths are meaningfully ordered.
+  beta: 0.2
+
+loss:
+  # Regularizes encoder representations only; it does not act on scalar costs.
+  sigreg:
+    weight: 0.01
+    kwargs:
+      knots: 17
+      num_proj: 1024
 
 negatives:
   goal_mismatch_weight: 1.0
@@ -48,7 +61,7 @@ episode_split:
 
 wandb:
   enabled: True
-  project: lewm-latent-trajectory-cost
+  project: leflow-dev
   entity: null
   name: ${output_model_name}_h${trajectory.horizon}
   id: null

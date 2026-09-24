@@ -19,6 +19,7 @@ from omegaconf import DictConfig, OmegaConf
 
 from latent_planner import load_lewm, stablewm_cache_dir
 from latent_trajectory_cost import TrajectoryCostModel, TrajectoryEncoder
+from module import SIGReg
 from train_latent_planner import (
     encode_latents,
     freeze,
@@ -87,6 +88,7 @@ def step_batch(
     lewm: torch.nn.Module,
     trajectory_encoder: TrajectoryEncoder,
     cost_model: TrajectoryCostModel,
+    sigreg: SIGReg | None,
     cfg: DictConfig,
     device: torch.device,
 ) -> dict[str, torch.Tensor]:
@@ -94,12 +96,12 @@ def step_batch(
     positive_path = encode_latents(lewm, batch, device)
     positive_goal = positive_path[:, -1]
 
-    _, positive_cost = ltc_outputs(
+    positive_representation, positive_cost = ltc_outputs(
         trajectory_encoder, cost_model, positive_path, positive_goal
     )
 
     mismatch_goal = mismatched_goals(positive_goal)
-    _, mismatch_cost = ltc_outputs(
+    mismatch_representation, mismatch_cost = ltc_outputs(
         trajectory_encoder, cost_model, positive_path, mismatch_goal
     )
     goal_mismatch_loss = preference_loss(
@@ -109,19 +111,33 @@ def step_batch(
     noisy_negative_path = noised_path(
         positive_path, float(cfg.negatives.noise_std)
     )
-    _, noisy_cost = ltc_outputs(
+    noisy_representation, noisy_cost = ltc_outputs(
         trajectory_encoder, cost_model, noisy_negative_path, positive_goal
     )
     noise_loss = preference_loss(positive_cost, noisy_cost, float(cfg.preference.beta))
 
+    # SIGReg acts directly on encoder outputs: the three trajectory types form
+    # the time axis and batch examples form the sample axis expected by SIGReg.
+    sigreg_loss = (
+        positive_cost.new_zeros(())
+        if sigreg is None
+        else sigreg(
+            torch.stack(
+                (positive_representation, mismatch_representation, noisy_representation),
+                dim=0,
+            )
+        )
+    )
     total = (
         float(cfg.negatives.goal_mismatch_weight) * goal_mismatch_loss
         + float(cfg.negatives.noise_weight) * noise_loss
+        + float(cfg.loss.sigreg.weight) * sigreg_loss
     )
     return {
         "loss": total,
         "goal_mismatch_loss": goal_mismatch_loss.detach(),
         "noise_loss": noise_loss.detach(),
+        "sigreg_loss": sigreg_loss.detach(),
         "positive_cost": positive_cost.detach().mean(),
         "mismatch_cost": mismatch_cost.detach().mean(),
         "noisy_cost": noisy_cost.detach().mean(),
@@ -150,6 +166,7 @@ def validate(
             lewm=lewm,
             trajectory_encoder=trajectory_encoder,
             cost_model=cost_model,
+            sigreg=None,
             cfg=cfg,
             device=device,
         )
@@ -183,15 +200,18 @@ def component_checkpoint_payload(
     }
 
 
-def save_component_checkpoints(
+def save_ltc_checkpoint(
     *,
     run_dir: Path,
     epoch: int,
     trajectory_encoder: TrajectoryEncoder,
     cost_model: TrajectoryCostModel,
     cfg: DictConfig,
-) -> tuple[Path, Path]:
-    """Save trajectory encoder and cost model as separate checkpoints."""
+) -> Path:
+    """Save the complete LTC pair in one checkpoint.
+
+    LeWM is intentionally excluded: it is frozen and remains referenced by path.
+    """
     encoder_payload = component_checkpoint_payload(
         component="trajectory_encoder",
         module=trajectory_encoder,
@@ -205,24 +225,22 @@ def save_component_checkpoints(
         architecture={
             "representation_dim": int(cfg.trajectory_encoder.representation_dim),
             "dropout": float(cfg.trajectory_encoder.dropout),
+            "output_activation": str(cfg.cost_model.output_activation),
         },
         lewm_checkpoint=str(cfg.lewm_checkpoint),
         cfg=cfg,
     )
-    encoder_path = run_dir / f"{cfg.output_model_name}_trajectory_encoder.pt"
-    cost_path = run_dir / f"{cfg.output_model_name}_cost_model.pt"
-    torch.save(
-        encoder_payload,
-        run_dir / f"{cfg.output_model_name}_trajectory_encoder_epoch_{epoch}.pt",
-    )
-    torch.save(
-        cost_payload,
-        run_dir / f"{cfg.output_model_name}_cost_model_epoch_{epoch}.pt",
-    )
-    torch.save(encoder_payload, encoder_path)
-    torch.save(cost_payload, cost_path)
-    return encoder_path, cost_path
-
+    payload = {
+        "format": "latent_trajectory_cost_bundle_v1",
+        "lewm_checkpoint": str(cfg.lewm_checkpoint),
+        "config": OmegaConf.to_container(cfg, resolve=True),
+        "trajectory_encoder": encoder_payload,
+        "cost_model": cost_payload,
+    }
+    checkpoint_path = run_dir / f"{cfg.output_model_name}.pt"
+    torch.save(payload, run_dir / f"{cfg.output_model_name}_epoch_{epoch}.pt")
+    torch.save(payload, checkpoint_path)
+    return checkpoint_path
 
 @hydra.main(version_base=None, config_path="./config/train", config_name="ltc")
 def run(cfg: DictConfig) -> None:
@@ -248,11 +266,17 @@ def run(cfg: DictConfig) -> None:
     cost_model = TrajectoryCostModel(
         representation_dim=int(cfg.trajectory_encoder.representation_dim),
         dropout=float(cfg.trajectory_encoder.dropout),
+        **cfg.cost_model,
     ).to(device)
     trainable_parameters = list(trajectory_encoder.parameters()) + list(
         cost_model.parameters()
     )
     optimizer = torch.optim.AdamW(trainable_parameters, **cfg.optimizer)
+    sigreg = (
+        SIGReg(**cfg.loss.sigreg.kwargs).to(device)
+        if float(cfg.loss.sigreg.weight)
+        else None
+    )
 
     run_dir = Path(stablewm_cache_dir(sub_folder="checkpoints"), cfg.subdir)
     run_dir.mkdir(parents=True, exist_ok=True)
@@ -271,6 +295,7 @@ def run(cfg: DictConfig) -> None:
                     lewm=lewm,
                     trajectory_encoder=trajectory_encoder,
                     cost_model=cost_model,
+                    sigreg=sigreg,
                     cfg=cfg,
                     device=device,
                 )
@@ -327,7 +352,7 @@ def run(cfg: DictConfig) -> None:
                 )
 
             print(f"epoch={epoch + 1} checkpoint_start", flush=True)
-            encoder_path, cost_path = save_component_checkpoints(
+            checkpoint_path = save_ltc_checkpoint(
                 run_dir=run_dir,
                 epoch=epoch + 1,
                 trajectory_encoder=trajectory_encoder,
@@ -336,12 +361,11 @@ def run(cfg: DictConfig) -> None:
             )
             print(
                 f"epoch={epoch + 1} checkpoint_done "
-                f"encoder={encoder_path} cost={cost_path}",
+                f"checkpoint={checkpoint_path}",
                 flush=True,
             )
             if wandb_run is not None and cfg.wandb.log_model:
-                wandb_run.save(str(encoder_path), base_path=str(run_dir))
-                wandb_run.save(str(cost_path), base_path=str(run_dir))
+                wandb_run.save(str(checkpoint_path), base_path=str(run_dir))
     finally:
         if wandb_run is not None:
             wandb_run.finish()

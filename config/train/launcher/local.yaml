@@ -7,5 +7,5 @@ defaults:
 wandb:
   enabled: True
   config:
-    project: le-wm
+    project: leflow-dev
     entity: le-wm

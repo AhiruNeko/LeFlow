@@ -1,48 +1,49 @@
 defaults:
   - _self_
 
+# Frozen representation dynamics and the bundled original LeFlow inverse model.
 lewm_checkpoint: ???
-output_model_name: latent_planner
-subdir: latent_planner/${now:%Y-%m-%d_%H-%M-%S}
+inverse_dynamics_checkpoint: ???
+
+output_model_name: unified_latent_planner
+subdir: latent_planner_unified/${now:%Y-%m-%d_%H-%M-%S}
 
 seed: 3072
 device: cuda
 img_size: 224
 train_split: 0.9
-epochs: 50
 log_interval: 50
-val_batches: 20
-max_train_batches: null
 grad_clip_norm: 1.0
 lewm_history_size: 3
 
-episode_split:
-  enabled: False
-  train_fraction: 0.8
-  seed: ${seed}
-  split_file: null
-
 wandb:
-  enabled: True
-  project: lewm-latent-planner
+  enabled: true
+  project: leflow-dev
   entity: null
-  name: ${output_model_name}_${planner.horizon}
+  name: ${output_model_name}_h${planner.horizon}
   id: null
   resume: allow
   mode: online
-  log_model: False
+  log_model: false
 
 loader:
   batch_size: 128
   num_workers: 6
-  persistent_workers: True
+  persistent_workers: true
   prefetch_factor: 3
-  pin_memory: True
+  pin_memory: true
+
+episode_split:
+  enabled: false
+  train_fraction: 0.8
+  seed: ${seed}
+  split_file: null
 
 data:
   dataset:
     name: tworoom
     frameskip: ${planner.action_block}
+    # A path contains z_0 ... z_H.
     num_steps: ${eval:'${planner.horizon} + 1'}
     keys_to_load:
       - pixels
@@ -56,49 +57,81 @@ planner:
   horizon: 5
   max_horizon: 20
   action_block: 5
-  num_samples_eval: 64
-  flow_steps_eval: 16
 
 flow:
   hidden_dim: 512
   depth: 4
   time_dim: 64
   dropout: 0.0
-  # Must equal the LTC trajectory_encoder.representation_dim.
+  # Must equal trajectory_encoder.representation_dim.
   path_feature_dim: 256
   heads: 8
 
-# Phase-one same-task synthetic experience memory. LTC is loaded frozen;
-# only flow and inverse dynamics are optimized in this training stage.
 experience:
-  trajectory_encoder_checkpoint: ???
-  cost_model_checkpoint: ???
-  # One N is drawn uniformly from [min_size, max_size] per batch.
-  # N=0 bypasses cross-attention for that batch.
-  min_size: 0
-  max_size: 64
-  # Latent-noise scale; used for both memory path types.
+  # One bundled LTC checkpoint containing both the trajectory encoder and cost model.
+  checkpoint: ???
+
+# One synthetic negative per task is both the experience input and the negative
+# member of the LTC pair. It is always paired with the same task goal.
+synthetic:
   noise_std: 0.10
-  # Probability of a path whose all states after z_0, including its endpoint,
-  # are noised. Otherwise only intermediate states are noised.
   all_after_start_probability: 0.5
 
-inverse_dynamics:
-  hidden_dim: 512
-  depth: 3
-  dropout: 0.0
+# Model-generated paths are collected without gradients. Each collection samples
+# one (candidates, rounds) pair from these choices, so both one-shot and FIFO
+# experience-generation histories enter the replay cache.
+collection:
+  task_batch_size: 8
+  candidates_choices: [4, 8, 16]
+  rounds_choices: [1, 2, 4]
+  flow_steps: 16
+  max_paths_per_task: 64
+
+real_replay:
+  # With task_batch_size=8, 16 banks retain up to 128 task records.
+  cache_max_banks: 16
+  # A new replay update samples exactly one of these numbers of paths from its
+  # same-task generated FIFO. Zero activates the no-memory branch only.
+  memory_size_choices: [0, 1, 2, 4, 8, 16, 32, 64]
+
+# Each epoch traverses the complete synthetic loader once. It is split into
+# cycles that each perform synthetic training, real collection, and real replay.
+training:
+  # Short step-based warm-up before the first complete epoch.
+  bootstrap_synthetic_updates: 500
+  epochs: 10
+  cycles_per_epoch: 4
+  real_updates_per_cycle: 25
+  checkpoint_every_epochs: 1
+
+ltc:
+  # Sigmoid-bounded costs lie in [0, 1].
+  beta: 0.2
 
 loss:
   flow:
-    weight: 1.0
-  inverse:
-    weight: 1.0
-  consistency:
-    weight: 0.1
-    detach_inverse: False
-  smoothness:
-    weight: 0.0
+    empty_weight: 1.0
+    memory_weight: 1.0
+  # Requires same-task memory to reduce FM error relative to the no-memory
+  # branch, while stop-gradient prevents degrading the baseline branch.
+  use:
+    weight: 0.2
+    margin: 0.0
+  sigreg:
+    weight: 0.01
+    kwargs:
+      knots: 17
+      num_proj: 1024
 
+# Each parameter group receives only its intended loss gradient:
+# flow <- planner loss; cost <- pairwise cost loss; encoder <- both.
 optimizer:
-  lr: 1e-4
-  weight_decay: 1e-4
+  planner:
+    lr: 1.0e-4
+    weight_decay: 1.0e-4
+  encoder:
+    lr: 1.0e-6
+    weight_decay: 1.0e-4
+  cost:
+    lr: 1.0e-6
+    weight_decay: 1.0e-4

@@ -6,12 +6,12 @@ rounds: 2
 samples_per_round: 32
 experience_max_size: 64
 top_k: 8
-# LTC costs are used only to retrieve top-k candidates.  The final action is
-# always chosen by inverse dynamics + LeWM rollout goal distance.
-cost_threshold: 0
-# null loads the LTC component paths recorded in the planner checkpoint.
-trajectory_encoder_checkpoint: null
-cost_model_checkpoint: null
+# LTC costs are sigmoid-bounded but not globally calibrated across tasks.
+# Disable early stopping by default; tune a threshold on validation if desired.
+cost_threshold: null
+# null loads LTC embedded in the unified planner checkpoint. Set this only to
+# override it with a standalone bundled LTC checkpoint.
+experience_checkpoint: null
 device: "cuda"
 seed: ${seed}
 history_size: 3

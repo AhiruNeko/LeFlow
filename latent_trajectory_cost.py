@@ -79,12 +79,14 @@ class TrajectoryEncoder(nn.Module):
         super().__init__()
         if model_dim % heads:
             raise ValueError("model_dim must be divisible by heads")
+
         self.latent_dim = latent_dim
         self.max_horizon = max_horizon
         self.representation_dim = representation_dim
 
-        # Each token explicitly contains its displacement from the task goal.
-        self.input_proj = nn.Linear(2 * latent_dim, model_dim)
+        # Tokens contain only the path states. The task goal remains available
+        # through goal_proj and modulates every Transformer block via AdaLN.
+        self.input_proj = nn.Linear(latent_dim, model_dim)
         self.goal_proj = nn.Sequential(
             nn.Linear(latent_dim, model_dim),
             nn.SiLU(),
@@ -128,9 +130,7 @@ class TrajectoryEncoder(nn.Module):
         if padding_mask is not None and padding_mask.shape != (batch, steps):
             raise ValueError("padding_mask must have shape [B, T]")
 
-        goal_tokens = goal[:, None].expand(-1, steps, -1)
-        tokens = torch.cat((path, goal_tokens - path), dim=-1)
-        x = self.input_proj(tokens)
+        x = self.input_proj(path)
         x = torch.cat((self.cls_token.expand(batch, -1, -1), x), dim=1)
         x = x + self.position[:, : steps + 1]
 
@@ -145,18 +145,38 @@ class TrajectoryEncoder(nn.Module):
             x = block(x, condition, padding_mask)
         return self.representation_proj(self.output_norm(x[:, 0]))
 
+    @classmethod
+    def from_checkpoint_architecture(
+        cls, *, latent_dim: int, architecture: dict[str, object]
+    ) -> "TrajectoryEncoder":
+        """Build the fixed path-only encoder from checkpoint metadata."""
+        return cls(latent_dim=latent_dim, **dict(architecture))
 
 class TrajectoryCostModel(nn.Module):
-    """Predict a lower-is-better scalar cost from an encoder representation.
+    """Predict a lower-is-better, sigmoid-bounded scalar trajectory cost.
 
     This class deliberately has no path encoder.  Use it as
-    ``cost_model(trajectory_encoder(path, goal))``.
+    ``cost_model(trajectory_encoder(path, goal))``.  Its output is always in
+    ``[0, 1]``: lower values denote more desirable trajectories.
     """
 
-    def __init__(self, representation_dim: int = 256, dropout: float = 0.1) -> None:
+    OUTPUT_ACTIVATION = "sigmoid"
+
+    def __init__(
+        self,
+        representation_dim: int = 256,
+        dropout: float = 0.1,
+        output_activation: str = OUTPUT_ACTIVATION,
+    ) -> None:
         super().__init__()
+        if output_activation != self.OUTPUT_ACTIVATION:
+            raise ValueError(
+                f"Unsupported output_activation={output_activation!r}. "
+                f"TrajectoryCostModel only supports {self.OUTPUT_ACTIVATION!r}."
+            )
         hidden_dim = max(representation_dim // 2, 1)
         self.representation_dim = representation_dim
+        self.output_activation = output_activation
         self.network = nn.Sequential(
             nn.Linear(representation_dim, representation_dim),
             nn.LayerNorm(representation_dim),
@@ -172,7 +192,28 @@ class TrajectoryCostModel(nn.Module):
             raise ValueError(
                 "representation must have shape [B, representation_dim]"
             )
-        return self.network(representation).squeeze(-1)
+        logits = self.network(representation).squeeze(-1)
+        return torch.sigmoid(logits)
+
+    @classmethod
+    def from_checkpoint_architecture(
+        cls, architecture: dict[str, object]
+    ) -> "TrajectoryCostModel":
+        """Build the bounded cost model and reject legacy unbounded checkpoints."""
+        architecture = dict(architecture)
+        output_activation = architecture.get("output_activation")
+        if output_activation != cls.OUTPUT_ACTIVATION:
+            legacy_hint = (
+                "The checkpoint predates output_activation metadata and used an "
+                "unbounded cost output."
+                if output_activation is None
+                else f"The checkpoint declares output_activation={output_activation!r}."
+            )
+            raise ValueError(
+                f"{legacy_hint} It is incompatible with the current sigmoid-bounded "
+                "cost model; retrain LTC and dependent planner checkpoints."
+            )
+        return cls(**architecture)
 
 
 @dataclass(frozen=True)

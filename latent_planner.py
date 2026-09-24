@@ -57,33 +57,37 @@ def _resolve_checkpoint(path_or_name: str | Path) -> Path:
 
 
 def load_ltc_components_for_evaluation(
-    trajectory_encoder_checkpoint: str | Path,
-    cost_model_checkpoint: str | Path,
+    checkpoint: str | Path,
     *,
     latent_dim: int,
     device: torch.device,
 ) -> tuple[TrajectoryEncoder, TrajectoryCostModel]:
-    """Load the separately checkpointed, frozen LTC modules for evaluation."""
-    encoder_payload = torch.load(
-        trajectory_encoder_checkpoint, map_location="cpu", weights_only=False
-    )
-    cost_payload = torch.load(
-        cost_model_checkpoint, map_location="cpu", weights_only=False
-    )
+    """Load LTC embedded in a bundled LTC or unified planner checkpoint."""
+    payload = torch.load(checkpoint, map_location="cpu", weights_only=False)
+    if payload.get("format") == "latent_trajectory_cost_bundle_v1":
+        encoder_payload = payload["trajectory_encoder"]
+        cost_payload = payload["cost_model"]
+    elif isinstance(payload.get("experience"), dict) and "trajectory_encoder" in payload["experience"]:
+        encoder_payload = payload["experience"]["trajectory_encoder"]
+        cost_payload = payload["experience"]["cost_model"]
+    else:
+        raise ValueError("checkpoint does not contain a bundled LTC model")
     if encoder_payload.get("component") != "trajectory_encoder":
-        raise ValueError("trajectory_encoder_checkpoint is not an LTC encoder checkpoint")
+        raise ValueError("trajectory encoder payload is invalid")
     if cost_payload.get("component") != "trajectory_cost":
-        raise ValueError("cost_model_checkpoint is not an LTC cost checkpoint")
-    encoder = TrajectoryEncoder(
-        latent_dim=latent_dim, **dict(encoder_payload["architecture"])
+        raise ValueError("cost-model payload is invalid")
+    encoder = TrajectoryEncoder.from_checkpoint_architecture(
+        latent_dim=latent_dim,
+        architecture=dict(encoder_payload["architecture"]),
     ).to(device)
-    cost_model = TrajectoryCostModel(**dict(cost_payload["architecture"])).to(device)
+    cost_model = TrajectoryCostModel.from_checkpoint_architecture(
+        dict(cost_payload["architecture"])
+    ).to(device)
     encoder.load_state_dict(encoder_payload["state_dict"], strict=True)
     cost_model.load_state_dict(cost_payload["state_dict"], strict=True)
     encoder.eval().requires_grad_(False)
     cost_model.eval().requires_grad_(False)
     return encoder, cost_model
-
 
 def load_lewm(lewm_checkpoint: str | Path) -> nn.Module:
     path = Path(lewm_checkpoint)
@@ -861,8 +865,7 @@ class ExperienceGuidedLatentPathSolver(LearnedLatentPathSolver):
         experience_max_size: int = 64,
         top_k: int = 8,
         cost_threshold: float | None = 1.0,
-        trajectory_encoder_checkpoint: str | Path | None = None,
-        cost_model_checkpoint: str | Path | None = None,
+        experience_checkpoint: str | Path | None = None,
         **kwargs: Any,
     ):
         super().__init__(num_samples=samples_per_round, **kwargs)
@@ -872,18 +875,11 @@ class ExperienceGuidedLatentPathSolver(LearnedLatentPathSolver):
             _resolve_checkpoint(self.checkpoint), map_location="cpu", weights_only=False
         )
         experience = payload.get("experience", {})
-        encoder_path = trajectory_encoder_checkpoint or experience.get(
-            "trajectory_encoder_checkpoint"
-        )
-        cost_path = cost_model_checkpoint or experience.get("cost_model_checkpoint")
-        if not encoder_path or not cost_path:
-            raise ValueError(
-                "Experience-guided evaluation requires LTC checkpoints, either "
-                "in the planner checkpoint experience metadata or solver config."
-            )
+        # Unified planner checkpoints embed LTC. A standalone LTC bundle can
+        # optionally override it through ``experience_checkpoint``.
+        ltc_checkpoint = experience_checkpoint or self.checkpoint
         self.trajectory_encoder, self.cost_model = load_ltc_components_for_evaluation(
-            encoder_path,
-            cost_path,
+            ltc_checkpoint,
             latent_dim=self.model.flow.latent_dim,
             device=self.device,
         )

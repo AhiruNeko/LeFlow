@@ -36,7 +36,7 @@ wandb:
   enabled: True
   config:
     entity: lewm
-    project: lewm
+    project: leflow-dev
     name: ${output_model_name}
     id: ${subdir}
     resume: allow
