@@ -42,7 +42,7 @@ preference:
 loss:
   # Regularizes encoder representations only; it does not act on scalar costs.
   sigreg:
-    weight: 0.01
+    weight: 0.005
     kwargs:
       knots: 17
       num_proj: 1024

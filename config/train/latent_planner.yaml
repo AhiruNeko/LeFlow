@@ -5,7 +5,7 @@ defaults:
 lewm_checkpoint: ???
 inverse_dynamics_checkpoint: ???
 
-output_model_name: unified_latent_planner
+output_model_name: latent_planner
 subdir: latent_planner_unified/${now:%Y-%m-%d_%H-%M-%S}
 
 seed: 3072
@@ -118,7 +118,7 @@ loss:
     weight: 0.2
     margin: 0.0
   sigreg:
-    weight: 0.01
+    weight: 0.001
     kwargs:
       knots: 17
       num_proj: 1024

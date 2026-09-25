@@ -9,9 +9,9 @@ exec > >(tee "$LOG_FILE") 2>&1
 export STABLEWM_HOME=/root/autodl-tmp/pusht
 export HYDRA_FULL_ERROR=1
 
-# Train this state-plus-goal-delta, sigmoid-bounded LTC checkpoint before launching.
-LTC_DIR="${STABLEWM_HOME}/latent_planner/pusht_h10_ep10"
-ORIGINAL_PLANNER="${STABLEWM_HOME}/leflow/pusht/latent_planner_h10.pt"
+# Train this path-only, sigmoid-bounded LTC checkpoint before launching.
+LTC_DIR="${STABLEWM_HOME}/latent_trajectory_cost/pusht_h10_ltc"
+ORIGINAL_PLANNER="${STABLEWM_HOME}/leflow/pusht/latent_planner.pt"
 
 conda run -n lewm --no-capture-output python train_latent_planner.py \
   lewm_checkpoint=pusht/lewm \
@@ -23,7 +23,7 @@ conda run -n lewm --no-capture-output python train_latent_planner.py \
   planner.max_horizon=20 \
   planner.action_block=5 \
   flow.path_feature_dim=256 \
-  experience.checkpoint="${LTC_DIR}/latent_trajectory_cost.pt" \
+  experience.checkpoint="${LTC_DIR}/latent_trajectory_cost_epoch_4.pt" \
   training.bootstrap_synthetic_updates=500 \
   training.epochs=10 \
   training.cycles_per_epoch=4 \
@@ -34,4 +34,4 @@ conda run -n lewm --no-capture-output python train_latent_planner.py \
   collection.flow_steps=16 \
   real_replay.cache_max_banks=16 \
   loader.batch_size=128 \
-  subdir=latent_planner_unified/pusht_h10
+  subdir=latent_planner/pusht_h10_ep10
