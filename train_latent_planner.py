@@ -535,7 +535,11 @@ def sample_real_memory(
     allowed = [int(size) for size in cfg.real_replay.memory_size_choices if int(size) <= available]
     if not allowed:
         return None, None, 0
-    count = allowed[int(torch.randint(len(allowed), (), generator=generator))]
+    count = allowed[
+        int(torch.randint(
+            len(allowed), (), device=paths.device, generator=generator
+        ))
+    ]
     if count == 0:
         return None, None, 0
     indices = torch.rand(batch, available, device=paths.device, generator=generator).argsort(dim=1)[:, :count]
