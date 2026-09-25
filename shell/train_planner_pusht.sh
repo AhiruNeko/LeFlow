@@ -34,4 +34,4 @@ conda run -n lewm --no-capture-output python train_latent_planner.py \
   collection.flow_steps=16 \
   real_replay.cache_max_banks=16 \
   loader.batch_size=128 \
-  subdir=latent_planner/pusht_h10_ep10
+  subdir=latent_planner_unified/pusht_h10_ep10
