@@ -160,55 +160,57 @@ def noised_path_intermediate(path: torch.Tensor, noise_std: float) -> torch.Tens
     return result
 
 
-@torch.no_grad()
-def build_experience_bank(
+def build_synthetic_experience_bank(
     *,
     z_path: torch.Tensor,
     trajectory_encoder: TrajectoryEncoder,
     cost_model: TrajectoryCostModel,
     cfg: DictConfig,
-) -> tuple[torch.Tensor | None, torch.Tensor | None]:
-    """Build a same-task, synthetic-noise experience bank for phase one.
+    generator: torch.Generator,
+) -> tuple[torch.Tensor | None, torch.Tensor | None, torch.Tensor, int]:
+    """Build a dense, same-task synthetic bank with a random size per batch.
 
-    Every memory trajectory is paired with the query's own start and true goal.
-    Half are expected to have all states after z_0 perturbed (including their
-    endpoint); the other half preserve their endpoint and perturb only the
-    intermediate states.  No expert positive path and no goal mismatch is put
-    into the memory, so the planner cannot retrieve its supervision target.
+    Every selected experience belongs to the query's own start/goal pair. A
+    single size is sampled for the full batch, so cross-attention never needs
+    padded tokens or an attention mask. The returned first negative path is
+    reserved for the one-pair LTC supervision in this update.
     """
     batch_size, _, latent_dim = z_path.shape
-    min_size = int(cfg.experience.min_size)
-    max_size = int(cfg.experience.max_size)
+    min_size = int(cfg.synthetic.memory_min_size)
+    max_size = int(cfg.synthetic.memory_max_size)
     if min_size < 0 or max_size < min_size:
-        raise ValueError("experience sizes must satisfy 0 <= min_size <= max_size")
-    size = int(torch.randint(min_size, max_size + 1, (), device=z_path.device))
+        raise ValueError("synthetic memory sizes must satisfy 0 <= min <= max")
+    size = int(torch.randint(
+        min_size, max_size + 1, (), device=z_path.device, generator=generator
+    ))
+
+    # LTC remains a one-negative comparison, including when the planner
+    # intentionally receives an empty experience bank.
+    ltc_negative = make_synthetic_negative(z_path, cfg)
     if size == 0:
-        return None, None
+        return None, None, ltc_negative, 0
 
     repeated_path = z_path[:, None].expand(-1, size, -1, -1).reshape(
         batch_size * size, z_path.size(1), latent_dim
     )
     all_after_start = noised_path_all_after_start(
-        repeated_path, float(cfg.experience.noise_std)
+        repeated_path, float(cfg.synthetic.noise_std)
     )
     intermediate_only = noised_path_intermediate(
-        repeated_path, float(cfg.experience.noise_std)
+        repeated_path, float(cfg.synthetic.noise_std)
     )
     choose_all_after_start = torch.rand(
-        batch_size * size, device=z_path.device
-    ) < float(cfg.experience.all_after_start_probability)
+        batch_size * size, device=z_path.device, generator=generator
+    ) < float(cfg.synthetic.all_after_start_probability)
     candidate_paths = torch.where(
         choose_all_after_start[:, None, None], all_after_start, intermediate_only
     )
-    candidate_goals = z_path[:, -1, :].repeat_interleave(size, dim=0)
-
-    features = trajectory_encoder(candidate_paths, candidate_goals)
-    costs = cost_model(features)
-    return (
-        features.reshape(batch_size, size, -1),
-        costs.reshape(batch_size, size),
+    candidate_goals = z_path[:, -1].repeat_interleave(size, dim=0)
+    features = trajectory_encoder(candidate_paths, candidate_goals).reshape(
+        batch_size, size, -1
     )
-
+    costs = cost_model(features.flatten(0, 1)).reshape(batch_size, size)
+    return features, costs, ltc_negative, size
 
 def default_episode_split_path(cfg: DictConfig) -> Path:
     dataset_name = str(cfg.data.dataset.name).replace("/", "_")
@@ -395,9 +397,15 @@ def synthetic_losses(
     cfg: DictConfig,
     generator: torch.Generator,
 ) -> tuple[torch.Tensor, torch.Tensor, dict[str, torch.Tensor]]:
-    """One synthetic experience and one LTC pair for every planner update."""
+    """Train with a random-size same-task synthetic experience bank."""
     goal = z_path[:, -1]
-    negative_path = make_synthetic_negative(z_path, cfg)
+    memory_features, memory_costs, negative_path, size = build_synthetic_experience_bank(
+        z_path=z_path,
+        trajectory_encoder=encoder,
+        cost_model=cost_model,
+        cfg=cfg,
+        generator=generator,
+    )
     positive_feature = encoder(z_path, goal)
     negative_feature = encoder(negative_path, goal)
     positive_cost = cost_model(positive_feature)
@@ -410,8 +418,8 @@ def synthetic_losses(
     empty, memory, use, empty_error, memory_error = paired_flow_losses(
         flow,
         z_path,
-        negative_feature[:, None],
-        negative_cost.detach()[:, None],
+        memory_features,
+        memory_costs.detach() if memory_costs is not None else None,
         use_margin=float(cfg.loss.use.margin),
         generator=generator,
     )
@@ -433,10 +441,9 @@ def synthetic_losses(
         "cost_margin": (negative_cost - positive_cost).detach().mean(),
         "pairwise_cost_loss": cost_pair.detach(),
         "sigreg_loss": regularizer.detach(),
-        "experience_size": z_path.new_tensor(1),
+        "experience_size": z_path.new_tensor(size),
     }
     return planner_loss, cost_loss, metrics
-
 
 @dataclass
 class RealExperience:
@@ -532,14 +539,12 @@ def sample_real_memory(
 ) -> tuple[torch.Tensor | None, torch.Tensor | None, int]:
     """Choose a random FIFO subset; feature gradients flow to the encoder only."""
     batch, available, steps, dim = paths.shape
-    allowed = [int(size) for size in cfg.real_replay.memory_size_choices if int(size) <= available]
-    if not allowed:
-        return None, None, 0
-    count = allowed[
-        int(torch.randint(
-            len(allowed), (), device=paths.device, generator=generator
-        ))
-    ]
+    max_size = min(int(cfg.real_replay.max_memory_size), available)
+    if max_size < 0:
+        raise ValueError("real_replay.max_memory_size must be non-negative")
+    count = int(torch.randint(
+        0, max_size + 1, (), device=paths.device, generator=generator
+    ))
     if count == 0:
         return None, None, 0
     indices = torch.rand(batch, available, device=paths.device, generator=generator).argsort(dim=1)[:, :count]
@@ -681,21 +686,22 @@ def slice_batch(batch: dict[str, torch.Tensor], size: int) -> dict[str, torch.Te
 
 def log_metrics(
     *,
-    phase: str,
+    stage: str,
     epoch: int,
     cycle: int,
     step: int,
     metrics: dict[str, torch.Tensor],
     wandb_run,
 ) -> None:
+    """Emit one shared W&B metric namespace for every training stage."""
     text = " ".join(f"{key}={metric_float(value):.4f}" for key, value in metrics.items())
     print(
-        f"epoch={epoch} cycle={cycle} step={step} phase={phase} {text}",
+        f"epoch={epoch} cycle={cycle} step={step} stage={stage} {text}",
         flush=True,
     )
     if wandb_run is not None:
         wandb_run.log(
-            {f"{phase}/{key}": metric_float(value) for key, value in metrics.items()}
+            {f"train/{key}": metric_float(value) for key, value in metrics.items()}
             | {"train/epoch": epoch, "train/cycle": cycle, "train/step": step},
             step=step,
         )
@@ -815,7 +821,7 @@ def run(cfg: DictConfig) -> None:
             global_step += 1
             if global_step % int(cfg.log_interval) == 0:
                 log_metrics(
-                    phase="bootstrap", epoch=0, cycle=0, step=global_step,
+                    stage="bootstrap", epoch=0, cycle=0, step=global_step,
                     metrics=metrics, wandb_run=wandb_run,
                 )
 
@@ -854,7 +860,7 @@ def run(cfg: DictConfig) -> None:
                     global_step += 1
                     if global_step % int(cfg.log_interval) == 0:
                         log_metrics(
-                            phase="synthetic", epoch=epoch, cycle=cycle,
+                            stage="synthetic", epoch=epoch, cycle=cycle,
                             step=global_step, metrics=metrics, wandb_run=wandb_run,
                         )
 
@@ -889,7 +895,7 @@ def run(cfg: DictConfig) -> None:
                     "collection_cache_banks": collection_path.new_tensor(len(replay)),
                 }
                 log_metrics(
-                    phase="collection", epoch=epoch, cycle=cycle,
+                    stage="collection", epoch=epoch, cycle=cycle,
                     step=global_step, metrics=collection_metrics, wandb_run=wandb_run,
                 )
 
@@ -909,7 +915,7 @@ def run(cfg: DictConfig) -> None:
                     global_step += 1
                     if global_step % int(cfg.log_interval) == 0:
                         log_metrics(
-                            phase="real", epoch=epoch, cycle=cycle,
+                            stage="real", epoch=epoch, cycle=cycle,
                             step=global_step, metrics=metrics, wandb_run=wandb_run,
                         )
 

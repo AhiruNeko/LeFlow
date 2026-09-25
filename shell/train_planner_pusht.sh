@@ -32,6 +32,9 @@ conda run -n lewm --no-capture-output python train_latent_planner.py \
   collection.candidates_choices='[4,8,16]' \
   collection.rounds_choices='[1,2,4]' \
   collection.flow_steps=16 \
+  synthetic.memory_min_size=0 \
+  synthetic.memory_max_size=64 \
+  real_replay.max_memory_size=64 \
   real_replay.cache_max_banks=16 \
   loader.batch_size=128 \
   subdir=latent_planner_unified/pusht_h10_ep10

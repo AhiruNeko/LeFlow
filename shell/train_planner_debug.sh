@@ -38,7 +38,8 @@ conda run -n lewm --no-capture-output python train_latent_planner.py \
   collection.flow_steps=2 \
   collection.max_paths_per_task=2 \
   real_replay.cache_max_banks=1 \
-  real_replay.memory_size_choices='[0,1,2]' \
+  real_replay.max_memory_size=2 \
+  synthetic.memory_max_size=2 \
   loader.batch_size=4 \
   loader.num_workers=0 \
   loader.persistent_workers=false \

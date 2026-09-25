@@ -71,17 +71,20 @@ experience:
   # One bundled LTC checkpoint containing both the trajectory encoder and cost model.
   checkpoint: ???
 
-# One synthetic negative per task is both the experience input and the negative
-# member of the LTC pair. It is always paired with the same task goal.
+# Each synthetic update builds a same-task bank of noisy trajectories. One
+# integer bank size is drawn uniformly per batch; this keeps every batch dense
+# and avoids padding / cross-attention masks.
 synthetic:
   noise_std: 0.10
   all_after_start_probability: 0.5
+  memory_min_size: 0
+  memory_max_size: 64
 
 # Model-generated paths are collected without gradients. Each collection samples
 # one (candidates, rounds) pair from these choices, so both one-shot and FIFO
 # experience-generation histories enter the replay cache.
 collection:
-  task_batch_size: 8
+  task_batch_size: 16
   candidates_choices: [4, 8, 16]
   rounds_choices: [1, 2, 4]
   flow_steps: 16
@@ -90,9 +93,10 @@ collection:
 real_replay:
   # With task_batch_size=8, 16 banks retain up to 128 task records.
   cache_max_banks: 16
-  # A new replay update samples exactly one of these numbers of paths from its
-  # same-task generated FIFO. Zero activates the no-memory branch only.
-  memory_size_choices: [0, 1, 2, 4, 8, 16, 32, 64]
+  # Each replay update draws one integer memory size uniformly from
+  # [0, min(max_memory_size, available_paths)] for the whole batch.
+  # Zero activates the no-memory branch only.
+  max_memory_size: 64
 
 # Each epoch traverses the complete synthetic loader once. It is split into
 # cycles that each perform synthetic training, real collection, and real replay.
@@ -100,7 +104,7 @@ training:
   # Short step-based warm-up before the first complete epoch.
   bootstrap_synthetic_updates: 500
   epochs: 10
-  cycles_per_epoch: 4
+  cycles_per_epoch: 64
   real_updates_per_cycle: 25
   checkpoint_every_epochs: 1
 
@@ -115,7 +119,7 @@ loss:
   # Requires same-task memory to reduce FM error relative to the no-memory
   # branch, while stop-gradient prevents degrading the baseline branch.
   use:
-    weight: 0.2
+    weight: 0.5
     margin: 0.005
   sigreg:
     weight: 0.001
