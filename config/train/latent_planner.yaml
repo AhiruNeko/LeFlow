@@ -116,7 +116,7 @@ loss:
   # branch, while stop-gradient prevents degrading the baseline branch.
   use:
     weight: 0.2
-    margin: 0.0
+    margin: 0.005
   sigreg:
     weight: 0.001
     kwargs:
