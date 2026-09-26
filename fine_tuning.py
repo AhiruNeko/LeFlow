@@ -131,7 +131,7 @@ def save_step_checkpoint(outdir, step, source, runtime, enc, cost, cfg):
     }
     planner_path = outdir / f"{stem}.pt"
     torch.save(payload, planner_path)
-    encoder_path, cost_path = save_finetuned_ltc_components(
+    ltc_path = save_finetuned_ltc_components(
         run_dir=outdir,
         output_model_name=stem,
         epoch=step,
@@ -142,7 +142,7 @@ def save_step_checkpoint(outdir, step, source, runtime, enc, cost, cfg):
     )
     print(
         f"step={step} checkpoint_done planner={planner_path} "
-        f"encoder={encoder_path} cost={cost_path}",
+        f"ltc={ltc_path}",
         flush=True,
     )
 @hydra.main(version_base=None, config_path='./config/train', config_name='fine_tuning')
@@ -203,11 +203,11 @@ def run(cfg: DictConfig):
                 ):
                     break
             payload = checkpoint_payload(lewm_checkpoint=str(source['lewm_checkpoint']), action_block=runtime.action_block, flow=runtime.flow, inverse_dynamics=runtime.inverse_dynamics, cfg=OmegaConf.to_container(cfg, resolve=True))
-            payload['experience'] = {'phase': 'closed_loop_fine_tuning', 'trajectory_encoder_checkpoint': str(cfg.experience.trajectory_encoder_checkpoint), 'cost_model_checkpoint': str(cfg.experience.cost_model_checkpoint), 'trajectory_encoder_state_dict': enc.state_dict(), 'cost_model_state_dict': cost.state_dict()}
+            payload['experience'] = {'phase': 'closed_loop_fine_tuning', 'ltc_checkpoint': str(cfg.experience.ltc_checkpoint), 'trajectory_encoder_state_dict': enc.state_dict(), 'cost_model_state_dict': cost.state_dict()}
             latest = outdir / f'{cfg.output_model_name}.pt'
             torch.save(payload, outdir / f'{cfg.output_model_name}_epoch_{epoch + 1}.pt')
             torch.save(payload, latest)
-            (ep, cp) = save_finetuned_ltc_components(run_dir=outdir, output_model_name=cfg.output_model_name, epoch=epoch + 1, lewm_checkpoint=str(source['lewm_checkpoint']), trajectory_encoder=enc, cost_model=cost, cfg=cfg)
+            ltc_path = save_finetuned_ltc_components(run_dir=outdir, output_model_name=cfg.output_model_name, epoch=epoch + 1, lewm_checkpoint=str(source['lewm_checkpoint']), trajectory_encoder=enc, cost_model=cost, cfg=cfg)
             print(f'epoch={epoch + 1} checkpoint_done planner={latest} encoder={ep} cost={cp}', flush=True)
     finally:
         if wb is not None:

@@ -18,16 +18,13 @@ export HYDRA_FULL_ERROR=1
 # Phase-two fine-tuned planner and jointly fine-tuned LTC components.
 PLANNER_DIR="${STABLEWM_HOME}/latent_planner_finetune/pusht_h10_phase2"
 PLANNER_CHECKPOINT="${PLANNER_DIR}/fine_tuned_latent_planner.pt"
-TRAJECTORY_ENCODER_CHECKPOINT="${PLANNER_DIR}/fine_tuned_latent_planner_trajectory_encoder.pt"
-COST_MODEL_CHECKPOINT="${PLANNER_DIR}/fine_tuned_latent_planner_cost_model.pt"
+LTC_CHECKPOINT="${PLANNER_DIR}/fine_tuned_latent_planner_ltc.pt"
 RESULT_FILE="${TASK_NAME}_${RUN_ID}_results.txt"
 ARTIFACT_MARKER="${PLANNER_DIR}/.${TASK_NAME}_${RUN_ID}.start"
 touch "${ARTIFACT_MARKER}"
 
 for CHECKPOINT in \
   "${PLANNER_CHECKPOINT}" \
-  "${TRAJECTORY_ENCODER_CHECKPOINT}" \
-  "${COST_MODEL_CHECKPOINT}"; do
   if [ ! -f "${CHECKPOINT}" ]; then
     echo "Missing checkpoint: ${CHECKPOINT}" >&2
     exit 1
@@ -40,8 +37,8 @@ conda run -n lewm --no-capture-output python eval.py --config-name=pusht.yaml \
   plan_config.horizon=10 \
   plan_config.receding_horizon=10 \
   plan_config.action_block=5 \
-  solver.trajectory_encoder_checkpoint="${TRAJECTORY_ENCODER_CHECKPOINT}" \
-  solver.cost_model_checkpoint="${COST_MODEL_CHECKPOINT}" \
+  solver.ltc_checkpoint="${LTC_CHECKPOINT}" \
+  solver.min_experience_size=0 \
   eval.num_eval=50 \
   output.filename="${RESULT_FILE}"
 
@@ -59,10 +56,10 @@ fi
 rm -f "${ARTIFACT_MARKER}"
 
 cp "${BASH_SOURCE[0]}" "${RESULT_DIR}/command.sh"
-printf 'planner_checkpoint=%s\ntrajectory_encoder_checkpoint=%s\ncost_model_checkpoint=%s\n' \
+printf "planner_checkpoint=%s\nltc_checkpoint=%s\n" \
   "${PLANNER_CHECKPOINT}" \
-  "${TRAJECTORY_ENCODER_CHECKPOINT}" \
-  "${COST_MODEL_CHECKPOINT}" \
+  "${LTC_CHECKPOINT}" \
   > "${RESULT_DIR}/checkpoints.txt"
+echo "min_experience_size=${MIN_EXPERIENCE_SIZE}" >> "${RESULT_DIR}/checkpoints.txt"
 
 echo "Archived evaluation artifacts to: ${RESULT_DIR}"

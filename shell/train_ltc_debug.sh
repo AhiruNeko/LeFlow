@@ -24,6 +24,9 @@ conda run -n lewm --no-capture-output python train_ltc.py \
   trajectory_encoder.depth=1 \
   trajectory_encoder.heads=4 \
   trajectory_encoder.mlp_dim=128 \
+  loss.sigreg.weight=1.0e-4 \
+  loss.sigreg.kwargs.knots=5 \
+  loss.sigreg.kwargs.num_proj=16 \
   epochs=1 \
   max_train_batches=2 \
   val_batches=1 \

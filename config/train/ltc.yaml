@@ -15,7 +15,9 @@ val_batches: 20
 max_train_batches: null
 grad_clip_norm: 1.0
 
-# LeWM only encodes observations. Each latent transition represents`n# `trajectory.action_block` raw environment steps, so one path spans`n# `trajectory.horizon * trajectory.action_block` raw steps.
+# LeWM only encodes observations. Each latent transition represents
+# trajectory.action_block raw environment steps, so one path spans
+# trajectory.horizon * trajectory.action_block raw steps.
 trajectory:
   horizon: 5
   # Number of raw environment actions represented by one latent transition.
@@ -34,6 +36,14 @@ preference:
   # L = softplus(-(c_negative - c_positive) / beta)
   beta: 0.1
 
+loss:
+  sigreg:
+    # Regularizes the joint expert/mismatch/noisy trajectory representation.
+    weight: 1.0e-4
+    kwargs:
+      knots: 17
+      num_proj: 1024
+
 negatives:
   goal_mismatch_weight: 1.0
   noise_weight: 1.0
@@ -48,13 +58,15 @@ episode_split:
 
 wandb:
   enabled: True
-  project: lewm-latent-trajectory-cost
+  project: leflow-dev
   entity: null
   name: ${output_model_name}_h${trajectory.horizon}
   id: null
   resume: allow
   mode: online
   log_model: False
+  # Cost histograms and q10/q50/q90 for expert, mismatch, and noisy paths.
+  cost_distribution_interval: 200
 
 loader:
   batch_size: 128

@@ -68,14 +68,13 @@ def _checkpoint_load(path: str | Path) -> dict[str, Any]:
 def load_ltc_components(
     cfg: DictConfig, latent_dim: int, device: torch.device
 ) -> tuple[TrajectoryEncoder, TrajectoryCostModel]:
-    """Load the separately saved LTC encoder and cost model."""
-    encoder_payload = _checkpoint_load(cfg.experience.trajectory_encoder_checkpoint)
-    cost_payload = _checkpoint_load(cfg.experience.cost_model_checkpoint)
-    if encoder_payload.get("component") != "trajectory_encoder":
-        raise ValueError("experience.trajectory_encoder_checkpoint is not an LTC encoder checkpoint")
-    if cost_payload.get("component") != "trajectory_cost":
-        raise ValueError("experience.cost_model_checkpoint is not an LTC cost checkpoint")
+    """Load encoder and cost model from one combined LTC checkpoint."""
+    payload = _checkpoint_load(cfg.experience.ltc_checkpoint)
+    if payload.get("format") != "latent_trajectory_cost_v2":
+        raise ValueError("experience.ltc_checkpoint is not a combined LTC checkpoint")
 
+    encoder_payload = payload["trajectory_encoder"]
+    cost_payload = payload["cost_model"]
     trajectory_encoder = TrajectoryEncoder(
         latent_dim=latent_dim, **dict(encoder_payload["architecture"])
     ).to(device)
@@ -94,8 +93,8 @@ def save_finetuned_ltc_components(
     trajectory_encoder: TrajectoryEncoder,
     cost_model: TrajectoryCostModel,
     cfg: DictConfig,
-) -> tuple[Path, Path]:
-    """Save fine-tuned LTC components in the same independently loadable format."""
+) -> Path:
+    """Save fine-tuned encoder and cost model in one combined LTC checkpoint."""
     encoder_arch = {
         "max_horizon": trajectory_encoder.max_horizon,
         "model_dim": trajectory_encoder.cls_token.size(-1),
@@ -109,28 +108,24 @@ def save_finetuned_ltc_components(
         "representation_dim": cost_model.representation_dim,
         "dropout": cost_model.network[3].p,
     }
-    common = {
-        "format": "latent_trajectory_cost_component_v1",
+    payload = {
+        "format": "latent_trajectory_cost_v2",
         "lewm_checkpoint": lewm_checkpoint,
         "config": OmegaConf.to_container(cfg, resolve=True),
+        "trajectory_encoder": {
+            "architecture": encoder_arch,
+            "state_dict": trajectory_encoder.state_dict(),
+        },
+        "cost_model": {
+            "architecture": cost_arch,
+            "state_dict": cost_model.state_dict(),
+        },
     }
-    encoder_payload = common | {
-        "component": "trajectory_encoder",
-        "architecture": encoder_arch,
-        "state_dict": trajectory_encoder.state_dict(),
-    }
-    cost_payload = common | {
-        "component": "trajectory_cost",
-        "architecture": cost_arch,
-        "state_dict": cost_model.state_dict(),
-    }
-    encoder_path = run_dir / f"{output_model_name}_trajectory_encoder.pt"
-    cost_path = run_dir / f"{output_model_name}_cost_model.pt"
-    torch.save(encoder_payload, run_dir / f"{output_model_name}_trajectory_encoder_epoch_{epoch}.pt")
-    torch.save(cost_payload, run_dir / f"{output_model_name}_cost_model_epoch_{epoch}.pt")
-    torch.save(encoder_payload, encoder_path)
-    torch.save(cost_payload, cost_path)
-    return encoder_path, cost_path
+    epoch_path = run_dir / f"{output_model_name}_ltc_epoch_{epoch}.pt"
+    latest_path = run_dir / f"{output_model_name}_ltc.pt"
+    torch.save(payload, epoch_path)
+    torch.save(payload, latest_path)
+    return latest_path
 
 
 def noised_path_all_after_start(path: torch.Tensor, noise_std: float) -> torch.Tensor:
@@ -529,8 +524,7 @@ def run(cfg: DictConfig):
                 cfg=OmegaConf.to_container(cfg, resolve=True),
             )
             payload["experience"] = {
-                "trajectory_encoder_checkpoint": str(cfg.experience.trajectory_encoder_checkpoint),
-                "cost_model_checkpoint": str(cfg.experience.cost_model_checkpoint),
+                "ltc_checkpoint": str(cfg.experience.ltc_checkpoint),
                 "trajectory_encoder_state_dict": trajectory_encoder.state_dict(),
                 "cost_model_state_dict": cost_model.state_dict(),
             }
@@ -539,7 +533,7 @@ def run(cfg: DictConfig):
             print(f"epoch={epoch + 1} checkpoint_start path={epoch_path}", flush=True)
             torch.save(payload, epoch_path)
             torch.save(payload, latest_path)
-            encoder_path, cost_path = save_finetuned_ltc_components(
+            ltc_path = save_finetuned_ltc_components(
                 run_dir=run_dir,
                 output_model_name=cfg.output_model_name,
                 epoch=epoch + 1,
@@ -550,7 +544,7 @@ def run(cfg: DictConfig):
             )
             print(
                 f"epoch={epoch + 1} checkpoint_done path={latest_path} "
-                f"encoder={encoder_path} cost={cost_path}",
+                f"ltc={ltc_path}",
                 flush=True,
             )
             if wandb_run is not None and cfg.wandb.log_model:

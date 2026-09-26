@@ -83,8 +83,9 @@ class TrajectoryEncoder(nn.Module):
         self.max_horizon = max_horizon
         self.representation_dim = representation_dim
 
-        # Each token explicitly contains its displacement from the task goal.
-        self.input_proj = nn.Linear(2 * latent_dim, model_dim)
+        # Tokens encode only their latent state. The task goal is supplied
+        # separately through the goal-conditioned AdaLN blocks below.
+        self.input_proj = nn.Linear(latent_dim, model_dim)
         self.goal_proj = nn.Sequential(
             nn.Linear(latent_dim, model_dim),
             nn.SiLU(),
@@ -128,9 +129,7 @@ class TrajectoryEncoder(nn.Module):
         if padding_mask is not None and padding_mask.shape != (batch, steps):
             raise ValueError("padding_mask must have shape [B, T]")
 
-        goal_tokens = goal[:, None].expand(-1, steps, -1)
-        tokens = torch.cat((path, goal_tokens - path), dim=-1)
-        x = self.input_proj(tokens)
+        x = self.input_proj(path)
         x = torch.cat((self.cls_token.expand(batch, -1, -1), x), dim=1)
         x = x + self.position[:, : steps + 1]
 

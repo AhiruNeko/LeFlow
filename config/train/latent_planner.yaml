@@ -71,8 +71,7 @@ flow:
 # Phase-one same-task synthetic experience memory. LTC is loaded frozen;
 # only flow and inverse dynamics are optimized in this training stage.
 experience:
-  trajectory_encoder_checkpoint: ???
-  cost_model_checkpoint: ???
+  ltc_checkpoint: ???
   # One N is drawn uniformly from [min_size, max_size] per batch.
   # N=0 bypasses cross-attention for that batch.
   min_size: 0

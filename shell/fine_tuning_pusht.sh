@@ -17,8 +17,7 @@ LTC_DIR="${STABLEWM_HOME}/latent_trajectory_cost/pusht_h10_ep10"
 # (64-entry FIFO), then sparsely rollout-label 8 collected candidates for LTC.
 conda run -n lewm --no-capture-output python fine_tuning.py \
   planner_checkpoint="${PLANNER_CHECKPOINT}" \
-  experience.trajectory_encoder_checkpoint="${LTC_DIR}/latent_trajectory_cost_trajectory_encoder_epoch_4.pt" \
-  experience.cost_model_checkpoint="${LTC_DIR}/latent_trajectory_cost_cost_model_epoch_4.pt" \
+  experience.ltc_checkpoint="${LTC_DIR}/latent_trajectory_cost_epoch_4.pt" \
   data.dataset.name=pusht_expert_train \
   data.dataset.keys_to_load='[pixels,action,proprio,state]' \
   data.dataset.keys_to_cache='[action,proprio,state]' \

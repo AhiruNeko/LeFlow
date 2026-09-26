@@ -5,13 +5,15 @@ flow_steps: 16
 rounds: 2
 samples_per_round: 32
 experience_max_size: 64
+# Before each guided planning round, bootstrap no-memory paths until FIFO has
+# at least this many entries. Set to 0 to disable bootstrap.
+min_experience_size: 0
 top_k: 8
 # LTC costs are used only to retrieve top-k candidates.  The final action is
 # always chosen by inverse dynamics + LeWM rollout goal distance.
 cost_threshold: 0
-# null loads the LTC component paths recorded in the planner checkpoint.
-trajectory_encoder_checkpoint: null
-cost_model_checkpoint: null
+# null loads the combined LTC checkpoint recorded in the planner checkpoint.
+ltc_checkpoint: null
 device: "cuda"
 seed: ${seed}
 history_size: 3

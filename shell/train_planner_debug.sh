@@ -27,8 +27,7 @@ conda run -n lewm --no-capture-output python train_latent_planner.py \
   flow.path_feature_dim=256 \
   inverse_dynamics.hidden_dim=64 \
   inverse_dynamics.depth=1 \
-  experience.trajectory_encoder_checkpoint="${LTC_DIR}/latent_trajectory_cost_trajectory_encoder_epoch_4.pt" \
-  experience.cost_model_checkpoint="${LTC_DIR}/latent_trajectory_cost_cost_model_epoch_4.pt" \
+  experience.ltc_checkpoint="${LTC_DIR}/latent_trajectory_cost_epoch_4.pt" \
   experience.min_size=0 \
   experience.max_size=2 \
   epochs=1 \

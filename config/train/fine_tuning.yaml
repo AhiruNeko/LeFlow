@@ -70,8 +70,7 @@ collection:
   max_size: 64
 
 experience:
-  trajectory_encoder_checkpoint: ???
-  cost_model_checkpoint: ???
+  ltc_checkpoint: ???
 
 # These negatives are NOT placed in the Cross-Attention experience FIFO.
 # They retain the original LTC preference calibration while the planner and

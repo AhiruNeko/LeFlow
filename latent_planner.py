@@ -57,23 +57,17 @@ def _resolve_checkpoint(path_or_name: str | Path) -> Path:
 
 
 def load_ltc_components_for_evaluation(
-    trajectory_encoder_checkpoint: str | Path,
-    cost_model_checkpoint: str | Path,
+    ltc_checkpoint: str | Path,
     *,
     latent_dim: int,
     device: torch.device,
 ) -> tuple[TrajectoryEncoder, TrajectoryCostModel]:
-    """Load the separately checkpointed, frozen LTC modules for evaluation."""
-    encoder_payload = torch.load(
-        trajectory_encoder_checkpoint, map_location="cpu", weights_only=False
-    )
-    cost_payload = torch.load(
-        cost_model_checkpoint, map_location="cpu", weights_only=False
-    )
-    if encoder_payload.get("component") != "trajectory_encoder":
-        raise ValueError("trajectory_encoder_checkpoint is not an LTC encoder checkpoint")
-    if cost_payload.get("component") != "trajectory_cost":
-        raise ValueError("cost_model_checkpoint is not an LTC cost checkpoint")
+    """Load frozen encoder and cost model from one combined LTC checkpoint."""
+    payload = torch.load(ltc_checkpoint, map_location="cpu", weights_only=False)
+    if payload.get("format") != "latent_trajectory_cost_v2":
+        raise ValueError("ltc_checkpoint is not a combined LTC checkpoint")
+    encoder_payload = payload["trajectory_encoder"]
+    cost_payload = payload["cost_model"]
     encoder = TrajectoryEncoder(
         latent_dim=latent_dim, **dict(encoder_payload["architecture"])
     ).to(device)
@@ -527,6 +521,7 @@ class LatentPlannerRuntime(nn.Module):
         samples_per_round: int,
         rounds: int,
         experience_max_size: int,
+        min_experience_size: int,
         top_k: int,
         cost_threshold: float | None,
         flow_steps: int,
@@ -544,6 +539,10 @@ class LatentPlannerRuntime(nn.Module):
             raise ValueError("samples_per_round and rounds must both be positive")
         if experience_max_size < 0 or top_k < 1:
             raise ValueError("experience_max_size must be >= 0 and top_k must be positive")
+        if not 0 <= min_experience_size <= experience_max_size:
+            raise ValueError(
+                "min_experience_size must satisfy 0 <= min_experience_size <= experience_max_size"
+            )
         if trajectory_encoder.representation_dim != self.flow.path_feature_dim:
             raise ValueError(
                 "LTC representation_dim must equal the flow path_feature_dim"
@@ -556,8 +555,54 @@ class LatentPlannerRuntime(nn.Module):
         top_paths: torch.Tensor | None = None
         top_costs: torch.Tensor | None = None
         rounds_used = 0
+        bootstrap_samples = 0
+
+        def append_to_memory(
+            features: torch.Tensor, costs: torch.Tensor
+        ) -> None:
+            nonlocal memory_features, memory_costs
+            if not experience_max_size:
+                return
+            appended_features = (
+                features
+                if memory_features is None
+                else torch.cat((memory_features, features), dim=1)
+            )
+            appended_costs = (
+                costs
+                if memory_costs is None
+                else torch.cat((memory_costs, costs), dim=1)
+            )
+            memory_features = appended_features[:, -experience_max_size:]
+            memory_costs = appended_costs[:, -experience_max_size:]
 
         for round_index in range(rounds):
+            current_memory_size = (
+                0 if memory_features is None else memory_features.size(1)
+            )
+            missing = max(min_experience_size - current_memory_size, 0)
+            if missing:
+                bootstrap_paths = self.sample_paths(
+                    z_start,
+                    z_goal,
+                    horizon=horizon,
+                    num_samples=missing,
+                    flow_steps=flow_steps,
+                    generator=generator,
+                )
+                flat_bootstrap = bootstrap_paths.flatten(0, 1)
+                bootstrap_goals = z_goal[:, None].expand(
+                    batch_size, missing, -1
+                ).reshape(-1, z_goal.size(-1))
+                bootstrap_features = trajectory_encoder(
+                    flat_bootstrap, bootstrap_goals
+                ).reshape(batch_size, missing, -1)
+                bootstrap_costs = cost_model(
+                    bootstrap_features.flatten(0, 1)
+                ).reshape(batch_size, missing)
+                append_to_memory(bootstrap_features, bootstrap_costs)
+                bootstrap_samples += missing
+
             candidates = self.sample_paths(
                 z_start,
                 z_goal,
@@ -580,20 +625,8 @@ class LatentPlannerRuntime(nn.Module):
             )
 
             # FIFO memory contains only paths generated for this same
-            # start/goal condition.  The newest candidates replace the oldest.
-            if experience_max_size:
-                appended_features = (
-                    candidate_features
-                    if memory_features is None
-                    else torch.cat([memory_features, candidate_features], dim=1)
-                )
-                appended_costs = (
-                    candidate_costs
-                    if memory_costs is None
-                    else torch.cat([memory_costs, candidate_costs], dim=1)
-                )
-                memory_features = appended_features[:, -experience_max_size:]
-                memory_costs = appended_costs[:, -experience_max_size:]
+            # start/goal condition. The newest candidates replace the oldest.
+            append_to_memory(candidate_features, candidate_costs)
 
             candidate_pool = candidates if top_paths is None else torch.cat(
                 [top_paths, candidates], dim=1
@@ -644,6 +677,9 @@ class LatentPlannerRuntime(nn.Module):
             "experience_top_costs": top_costs.detach().cpu(),
             "rounds_used": torch.full(
                 (batch_size,), rounds_used, device=self.device, dtype=torch.long
+            ).cpu(),
+            "bootstrap_samples": torch.full(
+                (batch_size,), bootstrap_samples, device=self.device, dtype=torch.long
             ).cpu(),
         }
 
@@ -859,10 +895,10 @@ class ExperienceGuidedLatentPathSolver(LearnedLatentPathSolver):
         rounds: int = 4,
         samples_per_round: int = 16,
         experience_max_size: int = 64,
+        min_experience_size: int = 0,
         top_k: int = 8,
         cost_threshold: float | None = 1.0,
-        trajectory_encoder_checkpoint: str | Path | None = None,
-        cost_model_checkpoint: str | Path | None = None,
+        ltc_checkpoint: str | Path | None = None,
         **kwargs: Any,
     ):
         super().__init__(num_samples=samples_per_round, **kwargs)
@@ -872,18 +908,14 @@ class ExperienceGuidedLatentPathSolver(LearnedLatentPathSolver):
             _resolve_checkpoint(self.checkpoint), map_location="cpu", weights_only=False
         )
         experience = payload.get("experience", {})
-        encoder_path = trajectory_encoder_checkpoint or experience.get(
-            "trajectory_encoder_checkpoint"
-        )
-        cost_path = cost_model_checkpoint or experience.get("cost_model_checkpoint")
-        if not encoder_path or not cost_path:
+        ltc_path = ltc_checkpoint or experience.get("ltc_checkpoint")
+        if not ltc_path:
             raise ValueError(
-                "Experience-guided evaluation requires LTC checkpoints, either "
-                "in the planner checkpoint experience metadata or solver config."
+                "Experience-guided evaluation requires an LTC checkpoint, either "
+                "in planner metadata or solver config."
             )
         self.trajectory_encoder, self.cost_model = load_ltc_components_for_evaluation(
-            encoder_path,
-            cost_path,
+            ltc_path,
             latent_dim=self.model.flow.latent_dim,
             device=self.device,
         )
@@ -895,6 +927,7 @@ class ExperienceGuidedLatentPathSolver(LearnedLatentPathSolver):
         self.rounds = rounds
         self.samples_per_round = samples_per_round
         self.experience_max_size = experience_max_size
+        self.min_experience_size = min_experience_size
         self.top_k = top_k
         self.cost_threshold = cost_threshold
 
@@ -903,7 +936,7 @@ class ExperienceGuidedLatentPathSolver(LearnedLatentPathSolver):
         del init_action
         total_envs = len(next(iter(info_dict.values())))
         all_actions, all_costs, all_goal_costs = [], [], []
-        all_experience_costs, all_rounds = [], []
+        all_experience_costs, all_rounds, all_bootstrap_samples = [], [], []
         for start in range(0, total_envs, self.batch_size):
             end = min(start + self.batch_size, total_envs)
             batch = {key: value[start:end] for key, value in info_dict.items()}
@@ -915,6 +948,7 @@ class ExperienceGuidedLatentPathSolver(LearnedLatentPathSolver):
                 samples_per_round=self.samples_per_round,
                 rounds=self.rounds,
                 experience_max_size=self.experience_max_size,
+                min_experience_size=self.min_experience_size,
                 top_k=self.top_k,
                 cost_threshold=self.cost_threshold,
                 flow_steps=self.flow_steps,
@@ -926,12 +960,14 @@ class ExperienceGuidedLatentPathSolver(LearnedLatentPathSolver):
             all_goal_costs.append(out["goal_costs"])
             all_experience_costs.append(out["experience_top_costs"])
             all_rounds.append(out["rounds_used"])
+            all_bootstrap_samples.append(out["bootstrap_samples"])
         return {
             "actions": torch.cat(all_actions, dim=0),
             "costs": torch.cat(all_costs, dim=0).tolist(),
             "goal_costs": torch.cat(all_goal_costs, dim=0),
             "experience_top_costs": torch.cat(all_experience_costs, dim=0),
             "experience_rounds_used": torch.cat(all_rounds, dim=0),
+            "experience_bootstrap_samples": torch.cat(all_bootstrap_samples, dim=0),
             "rollout_count": self.model.rollout_count,
         }
 
