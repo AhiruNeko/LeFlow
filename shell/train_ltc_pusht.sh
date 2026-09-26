@@ -17,6 +17,6 @@ conda run -n lewm --no-capture-output python train_ltc.py \
   trajectory.horizon=10 \
   trajectory.action_block=5 \
   trajectory_encoder.max_horizon=20 \
-  epochs=10 \
+  epochs=5 \
   loader.batch_size=128 \
   subdir=latent_trajectory_cost/pusht_h10_ep10
