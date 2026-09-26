@@ -1,0 +1,110 @@
+{
+  "description": "Each row is an experience-guided generated latent path. rollout_error is measured after frozen inverse-dynamics decoding and frozen LeWM rollout.",
+  "checkpoints": {
+    "planner": "/root/projects/pusht/latent_planner_finetune/pusht_h10_phase2/fine_tuned_latent_planner.pt",
+    "encoder": "/root/projects/pusht/latent_planner_finetune/pusht_h10_phase2/fine_tuned_latent_planner_trajectory_encoder.pt",
+    "cost": "/root/projects/pusht/latent_planner_finetune/pusht_h10_phase2/fine_tuned_latent_planner_cost_model.pt"
+  },
+  "settings": {
+    "dataset": "pusht_expert_train",
+    "num_tasks": 8,
+    "horizon": 10,
+    "action_block": 5,
+    "candidates": 64,
+    "rounds": 1,
+    "flow_steps": 16,
+    "experience_max_size": 64,
+    "seed": 42
+  },
+  "task_summaries": [
+    {
+      "task_id": 0,
+      "num_paths": 64,
+      "min_cost_index": 30,
+      "min_cost": -0.3176143169403076,
+      "rollout_error_at_min_cost": 0.15701213479042053,
+      "min_error_index": 3,
+      "min_rollout_error": 0.007413036655634642,
+      "cost_at_min_error": -0.3094022274017334,
+      "same_selected_path": false
+    },
+    {
+      "task_id": 1,
+      "num_paths": 64,
+      "min_cost_index": 20,
+      "min_cost": -0.3442729115486145,
+      "rollout_error_at_min_cost": 0.050800129771232605,
+      "min_error_index": 40,
+      "min_rollout_error": 0.017894186079502106,
+      "cost_at_min_error": -0.33984893560409546,
+      "same_selected_path": false
+    },
+    {
+      "task_id": 2,
+      "num_paths": 64,
+      "min_cost_index": 25,
+      "min_cost": -0.27179574966430664,
+      "rollout_error_at_min_cost": 0.056425198912620544,
+      "min_error_index": 44,
+      "min_rollout_error": 0.01447401475161314,
+      "cost_at_min_error": -0.25538697838783264,
+      "same_selected_path": false
+    },
+    {
+      "task_id": 3,
+      "num_paths": 64,
+      "min_cost_index": 45,
+      "min_cost": -0.35731035470962524,
+      "rollout_error_at_min_cost": 0.14418964087963104,
+      "min_error_index": 36,
+      "min_rollout_error": 0.08707739412784576,
+      "cost_at_min_error": -0.3181794583797455,
+      "same_selected_path": false
+    },
+    {
+      "task_id": 4,
+      "num_paths": 64,
+      "min_cost_index": 42,
+      "min_cost": -0.2699240744113922,
+      "rollout_error_at_min_cost": 0.05810343474149704,
+      "min_error_index": 57,
+      "min_rollout_error": 0.01890650764107704,
+      "cost_at_min_error": -0.25340306758880615,
+      "same_selected_path": false
+    },
+    {
+      "task_id": 5,
+      "num_paths": 64,
+      "min_cost_index": 30,
+      "min_cost": -0.40041014552116394,
+      "rollout_error_at_min_cost": 0.15280349552631378,
+      "min_error_index": 19,
+      "min_rollout_error": 0.06541359424591064,
+      "cost_at_min_error": -0.36897027492523193,
+      "same_selected_path": false
+    },
+    {
+      "task_id": 6,
+      "num_paths": 64,
+      "min_cost_index": 54,
+      "min_cost": -0.32503652572631836,
+      "rollout_error_at_min_cost": 0.2578297555446625,
+      "min_error_index": 11,
+      "min_rollout_error": 0.02349114418029785,
+      "cost_at_min_error": -0.30094775557518005,
+      "same_selected_path": false
+    },
+    {
+      "task_id": 7,
+      "num_paths": 64,
+      "min_cost_index": 37,
+      "min_cost": -0.24541039764881134,
+      "rollout_error_at_min_cost": 1.9944790601730347,
+      "min_error_index": 10,
+      "min_rollout_error": 1.2039644718170166,
+      "cost_at_min_error": -0.23509728908538818,
+      "same_selected_path": false
+    }
+  ],
+  "all_paths_csv": "/root/projects/LeFlow/analysis/inference_trace/pusht_h10_phase2/20260926_032411/all_paths.csv"
+}

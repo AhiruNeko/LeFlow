@@ -1,0 +1,14 @@
+03:24:17 | INFO  | __init__.py | JAX version 0.6.2 available.
+03:24:21 | INFO  | atomic_chec~| [atomic_save] installed crash-safe checkpoint plugin (write to sibling .tmp + fsync + atomic rename)
+/root/miniconda3/envs/lewm/lib/python3.10/site-packages/lance/__init__.py:355: UserWarning: lance is not fork-safe. If you are using multiprocessing, use spawn or forkserver instead.
+  warnings.warn(
+task=0 paths=64 min_cost=#30:-0.3176 error=0.1570 min_error=#3:0.0074
+task=1 paths=64 min_cost=#20:-0.3443 error=0.0508 min_error=#40:0.0179
+task=2 paths=64 min_cost=#25:-0.2718 error=0.0564 min_error=#44:0.0145
+task=3 paths=64 min_cost=#45:-0.3573 error=0.1442 min_error=#36:0.0871
+task=4 paths=64 min_cost=#42:-0.2699 error=0.0581 min_error=#57:0.0189
+task=5 paths=64 min_cost=#30:-0.4004 error=0.1528 min_error=#19:0.0654
+task=6 paths=64 min_cost=#54:-0.3250 error=0.2578 min_error=#11:0.0235
+task=7 paths=64 min_cost=#37:-0.2454 error=1.9945 min_error=#10:1.2040
+summary_written=/root/projects/LeFlow/analysis/inference_trace/pusht_h10_phase2/20260926_032411/summary.json
+Artifacts written to: /root/projects/LeFlow/analysis/inference_trace/pusht_h10_phase2/20260926_032411

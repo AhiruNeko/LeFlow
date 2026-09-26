@@ -16,8 +16,8 @@ export STABLEWM_HOME=/root/projects/pusht
 export HYDRA_FULL_ERROR=1
 
 # Unified planner checkpoint: it embeds frozen IDM and the jointly trained LTC.
-PLANNER_DIR="${STABLEWM_HOME}/latent_planner_unified/pusht_h10"
-PLANNER_CHECKPOINT="${PLANNER_DIR}/unified_latent_planner.pt"
+PLANNER_DIR="${STABLEWM_HOME}/latent_planner_unified/pusht_h10_ep10"
+PLANNER_CHECKPOINT="${PLANNER_DIR}/latent_planner.pt"
 RESULT_FILE="${TASK_NAME}_${RUN_ID}_results.txt"
 ARTIFACT_MARKER="${PLANNER_DIR}/.${TASK_NAME}_${RUN_ID}.start"
 touch "${ARTIFACT_MARKER}"

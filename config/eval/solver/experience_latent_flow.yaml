@@ -2,10 +2,10 @@ _target_: latent_planner.ExperienceGuidedLatentPathSolver
 checkpoint: ${policy}
 batch_size: 1
 flow_steps: 16
-rounds: 2
-samples_per_round: 32
+rounds: 16
+samples_per_round: 4
 experience_max_size: 64
-top_k: 8
+top_k: 64
 # LTC costs are sigmoid-bounded but not globally calibrated across tasks.
 # Disable early stopping by default; tune a threshold on validation if desired.
 cost_threshold: null

@@ -1,0 +1,827 @@
+{
+  "description": "All settings use fixed identical tasks and initial latent-noise indices. 64x1 is the no-experience baseline; every other setting uses FIFO experience. rollout_error follows frozen inverse-dynamics decoding and frozen LeWM rollout. expert_action_error is MSE to the aligned H-step expert action sequence from the dataset.",
+  "checkpoints": {
+    "planner": "/root/projects/pusht/latent_planner_finetune/pusht_h10_phase2/fine_tuned_latent_planner.pt",
+    "encoder": "/root/projects/pusht/latent_planner_finetune/pusht_h10_phase2/fine_tuned_latent_planner_trajectory_encoder.pt",
+    "cost": "/root/projects/pusht/latent_planner_finetune/pusht_h10_phase2/fine_tuned_latent_planner_cost_model.pt"
+  },
+  "settings": {
+    "dataset": "pusht_expert_train",
+    "num_tasks": 8,
+    "horizon": 10,
+    "action_block": 5,
+    "candidate_round_settings": [
+      "64x1",
+      "32x2",
+      "16x4",
+      "8x8",
+      "4x16"
+    ],
+    "flow_steps": 16,
+    "experience_max_size": 64,
+    "seed": 42
+  },
+  "comparisons": [
+    {
+      "task_id": 0,
+      "setting": "64x1",
+      "condition": "experience_off",
+      "num_paths": 64,
+      "summary": {
+        "min_cost_index": 54,
+        "min_cost": -0.3188176155090332,
+        "rollout_error_at_min_cost": 0.11987505853176117,
+        "min_error_index": 14,
+        "min_rollout_error": 0.007314178626984358,
+        "cost_at_min_error": -0.3099850118160248,
+        "min_expert_action_error_index": 29,
+        "min_expert_action_error": 0.7929365634918213,
+        "rollout_error_at_min_expert_action_error": 0.013683650642633438,
+        "same_selected_path": false
+      },
+      "task_csv": "/root/projects/LeFlow/analysis/inference_trace/pusht_h10_phase2/20260926_135437/task_000_all_settings_paths.csv",
+      "task_plot": "/root/projects/LeFlow/analysis/inference_trace/pusht_h10_phase2/20260926_135437/task_000_all_settings_comparison.png"
+    },
+    {
+      "task_id": 0,
+      "setting": "32x2",
+      "condition": "experience_on",
+      "num_paths": 64,
+      "summary": {
+        "min_cost_index": 54,
+        "min_cost": -0.31877362728118896,
+        "rollout_error_at_min_cost": 0.11680857837200165,
+        "min_error_index": 14,
+        "min_rollout_error": 0.007314154878258705,
+        "cost_at_min_error": -0.3099849224090576,
+        "min_expert_action_error_index": 29,
+        "min_expert_action_error": 0.7929365634918213,
+        "rollout_error_at_min_expert_action_error": 0.013683627359569073,
+        "same_selected_path": false
+      },
+      "task_csv": "/root/projects/LeFlow/analysis/inference_trace/pusht_h10_phase2/20260926_135437/task_000_all_settings_paths.csv",
+      "task_plot": "/root/projects/LeFlow/analysis/inference_trace/pusht_h10_phase2/20260926_135437/task_000_all_settings_comparison.png"
+    },
+    {
+      "task_id": 0,
+      "setting": "16x4",
+      "condition": "experience_on",
+      "num_paths": 64,
+      "summary": {
+        "min_cost_index": 54,
+        "min_cost": -0.3187685012817383,
+        "rollout_error_at_min_cost": 0.1168166995048523,
+        "min_error_index": 14,
+        "min_rollout_error": 0.007314139977097511,
+        "cost_at_min_error": -0.3099849820137024,
+        "min_expert_action_error_index": 29,
+        "min_expert_action_error": 0.7812063694000244,
+        "rollout_error_at_min_expert_action_error": 0.014828096143901348,
+        "same_selected_path": false
+      },
+      "task_csv": "/root/projects/LeFlow/analysis/inference_trace/pusht_h10_phase2/20260926_135437/task_000_all_settings_paths.csv",
+      "task_plot": "/root/projects/LeFlow/analysis/inference_trace/pusht_h10_phase2/20260926_135437/task_000_all_settings_comparison.png"
+    },
+    {
+      "task_id": 0,
+      "setting": "8x8",
+      "condition": "experience_on",
+      "num_paths": 64,
+      "summary": {
+        "min_cost_index": 54,
+        "min_cost": -0.31876781582832336,
+        "rollout_error_at_min_cost": 0.11683569848537445,
+        "min_error_index": 14,
+        "min_rollout_error": 0.00790597964078188,
+        "cost_at_min_error": -0.31028515100479126,
+        "min_expert_action_error_index": 29,
+        "min_expert_action_error": 0.7811301350593567,
+        "rollout_error_at_min_expert_action_error": 0.014834072440862656,
+        "same_selected_path": false
+      },
+      "task_csv": "/root/projects/LeFlow/analysis/inference_trace/pusht_h10_phase2/20260926_135437/task_000_all_settings_paths.csv",
+      "task_plot": "/root/projects/LeFlow/analysis/inference_trace/pusht_h10_phase2/20260926_135437/task_000_all_settings_comparison.png"
+    },
+    {
+      "task_id": 0,
+      "setting": "4x16",
+      "condition": "experience_on",
+      "num_paths": 64,
+      "summary": {
+        "min_cost_index": 54,
+        "min_cost": -0.31876760721206665,
+        "rollout_error_at_min_cost": 0.11686905473470688,
+        "min_error_index": 14,
+        "min_rollout_error": 0.007915536873042583,
+        "cost_at_min_error": -0.31027108430862427,
+        "min_expert_action_error_index": 29,
+        "min_expert_action_error": 0.7811028957366943,
+        "rollout_error_at_min_expert_action_error": 0.014830701053142548,
+        "same_selected_path": false
+      },
+      "task_csv": "/root/projects/LeFlow/analysis/inference_trace/pusht_h10_phase2/20260926_135437/task_000_all_settings_paths.csv",
+      "task_plot": "/root/projects/LeFlow/analysis/inference_trace/pusht_h10_phase2/20260926_135437/task_000_all_settings_comparison.png"
+    },
+    {
+      "task_id": 1,
+      "setting": "64x1",
+      "condition": "experience_off",
+      "num_paths": 64,
+      "summary": {
+        "min_cost_index": 29,
+        "min_cost": -0.3446890413761139,
+        "rollout_error_at_min_cost": 0.05566006153821945,
+        "min_error_index": 45,
+        "min_rollout_error": 0.016568705439567566,
+        "cost_at_min_error": -0.3394036889076233,
+        "min_expert_action_error_index": 44,
+        "min_expert_action_error": 0.3662791848182678,
+        "rollout_error_at_min_expert_action_error": 0.0420236811041832,
+        "same_selected_path": false
+      },
+      "task_csv": "/root/projects/LeFlow/analysis/inference_trace/pusht_h10_phase2/20260926_135437/task_001_all_settings_paths.csv",
+      "task_plot": "/root/projects/LeFlow/analysis/inference_trace/pusht_h10_phase2/20260926_135437/task_001_all_settings_comparison.png"
+    },
+    {
+      "task_id": 1,
+      "setting": "32x2",
+      "condition": "experience_on",
+      "num_paths": 64,
+      "summary": {
+        "min_cost_index": 29,
+        "min_cost": -0.34468916058540344,
+        "rollout_error_at_min_cost": 0.05566000938415527,
+        "min_error_index": 45,
+        "min_rollout_error": 0.015524922870099545,
+        "cost_at_min_error": -0.3390948176383972,
+        "min_expert_action_error_index": 44,
+        "min_expert_action_error": 0.3638116419315338,
+        "rollout_error_at_min_expert_action_error": 0.043516021221876144,
+        "same_selected_path": false
+      },
+      "task_csv": "/root/projects/LeFlow/analysis/inference_trace/pusht_h10_phase2/20260926_135437/task_001_all_settings_paths.csv",
+      "task_plot": "/root/projects/LeFlow/analysis/inference_trace/pusht_h10_phase2/20260926_135437/task_001_all_settings_comparison.png"
+    },
+    {
+      "task_id": 1,
+      "setting": "16x4",
+      "condition": "experience_on",
+      "num_paths": 64,
+      "summary": {
+        "min_cost_index": 29,
+        "min_cost": -0.3438419699668884,
+        "rollout_error_at_min_cost": 0.0562167726457119,
+        "min_error_index": 45,
+        "min_rollout_error": 0.015526076778769493,
+        "cost_at_min_error": -0.3390961289405823,
+        "min_expert_action_error_index": 44,
+        "min_expert_action_error": 0.36380308866500854,
+        "rollout_error_at_min_expert_action_error": 0.04352005571126938,
+        "same_selected_path": false
+      },
+      "task_csv": "/root/projects/LeFlow/analysis/inference_trace/pusht_h10_phase2/20260926_135437/task_001_all_settings_paths.csv",
+      "task_plot": "/root/projects/LeFlow/analysis/inference_trace/pusht_h10_phase2/20260926_135437/task_001_all_settings_comparison.png"
+    },
+    {
+      "task_id": 1,
+      "setting": "8x8",
+      "condition": "experience_on",
+      "num_paths": 64,
+      "summary": {
+        "min_cost_index": 29,
+        "min_cost": -0.3438517451286316,
+        "rollout_error_at_min_cost": 0.05622180551290512,
+        "min_error_index": 45,
+        "min_rollout_error": 0.015525264665484428,
+        "cost_at_min_error": -0.3390956521034241,
+        "min_expert_action_error_index": 44,
+        "min_expert_action_error": 0.3638097941875458,
+        "rollout_error_at_min_expert_action_error": 0.0435175858438015,
+        "same_selected_path": false
+      },
+      "task_csv": "/root/projects/LeFlow/analysis/inference_trace/pusht_h10_phase2/20260926_135437/task_001_all_settings_paths.csv",
+      "task_plot": "/root/projects/LeFlow/analysis/inference_trace/pusht_h10_phase2/20260926_135437/task_001_all_settings_comparison.png"
+    },
+    {
+      "task_id": 1,
+      "setting": "4x16",
+      "condition": "experience_on",
+      "num_paths": 64,
+      "summary": {
+        "min_cost_index": 29,
+        "min_cost": -0.3438514173030853,
+        "rollout_error_at_min_cost": 0.0562237910926342,
+        "min_error_index": 45,
+        "min_rollout_error": 0.01552564837038517,
+        "cost_at_min_error": -0.3390958309173584,
+        "min_expert_action_error_index": 44,
+        "min_expert_action_error": 0.3638082444667816,
+        "rollout_error_at_min_expert_action_error": 0.04351832717657089,
+        "same_selected_path": false
+      },
+      "task_csv": "/root/projects/LeFlow/analysis/inference_trace/pusht_h10_phase2/20260926_135437/task_001_all_settings_paths.csv",
+      "task_plot": "/root/projects/LeFlow/analysis/inference_trace/pusht_h10_phase2/20260926_135437/task_001_all_settings_comparison.png"
+    },
+    {
+      "task_id": 2,
+      "setting": "64x1",
+      "condition": "experience_off",
+      "num_paths": 64,
+      "summary": {
+        "min_cost_index": 36,
+        "min_cost": -0.2752797603607178,
+        "rollout_error_at_min_cost": 0.11675915122032166,
+        "min_error_index": 22,
+        "min_rollout_error": 0.022870250046253204,
+        "cost_at_min_error": -0.26424145698547363,
+        "min_expert_action_error_index": 64,
+        "min_expert_action_error": 0.5831895470619202,
+        "rollout_error_at_min_expert_action_error": 0.12381496280431747,
+        "same_selected_path": false
+      },
+      "task_csv": "/root/projects/LeFlow/analysis/inference_trace/pusht_h10_phase2/20260926_135437/task_002_all_settings_paths.csv",
+      "task_plot": "/root/projects/LeFlow/analysis/inference_trace/pusht_h10_phase2/20260926_135437/task_002_all_settings_comparison.png"
+    },
+    {
+      "task_id": 2,
+      "setting": "32x2",
+      "condition": "experience_on",
+      "num_paths": 64,
+      "summary": {
+        "min_cost_index": 36,
+        "min_cost": -0.2766917943954468,
+        "rollout_error_at_min_cost": 0.11381128430366516,
+        "min_error_index": 22,
+        "min_rollout_error": 0.022870168089866638,
+        "cost_at_min_error": -0.26424139738082886,
+        "min_expert_action_error_index": 64,
+        "min_expert_action_error": 0.5783632397651672,
+        "rollout_error_at_min_expert_action_error": 0.1187579482793808,
+        "same_selected_path": false
+      },
+      "task_csv": "/root/projects/LeFlow/analysis/inference_trace/pusht_h10_phase2/20260926_135437/task_002_all_settings_paths.csv",
+      "task_plot": "/root/projects/LeFlow/analysis/inference_trace/pusht_h10_phase2/20260926_135437/task_002_all_settings_comparison.png"
+    },
+    {
+      "task_id": 2,
+      "setting": "16x4",
+      "condition": "experience_on",
+      "num_paths": 64,
+      "summary": {
+        "min_cost_index": 36,
+        "min_cost": -0.2767070531845093,
+        "rollout_error_at_min_cost": 0.11396460235118866,
+        "min_error_index": 22,
+        "min_rollout_error": 0.027357002720236778,
+        "cost_at_min_error": -0.2656998038291931,
+        "min_expert_action_error_index": 64,
+        "min_expert_action_error": 0.5783801078796387,
+        "rollout_error_at_min_expert_action_error": 0.11864878982305527,
+        "same_selected_path": false
+      },
+      "task_csv": "/root/projects/LeFlow/analysis/inference_trace/pusht_h10_phase2/20260926_135437/task_002_all_settings_paths.csv",
+      "task_plot": "/root/projects/LeFlow/analysis/inference_trace/pusht_h10_phase2/20260926_135437/task_002_all_settings_comparison.png"
+    },
+    {
+      "task_id": 2,
+      "setting": "8x8",
+      "condition": "experience_on",
+      "num_paths": 64,
+      "summary": {
+        "min_cost_index": 36,
+        "min_cost": -0.27671360969543457,
+        "rollout_error_at_min_cost": 0.11401797831058502,
+        "min_error_index": 22,
+        "min_rollout_error": 0.027307387441396713,
+        "cost_at_min_error": -0.2657115161418915,
+        "min_expert_action_error_index": 64,
+        "min_expert_action_error": 0.5783634185791016,
+        "rollout_error_at_min_expert_action_error": 0.1186390221118927,
+        "same_selected_path": false
+      },
+      "task_csv": "/root/projects/LeFlow/analysis/inference_trace/pusht_h10_phase2/20260926_135437/task_002_all_settings_paths.csv",
+      "task_plot": "/root/projects/LeFlow/analysis/inference_trace/pusht_h10_phase2/20260926_135437/task_002_all_settings_comparison.png"
+    },
+    {
+      "task_id": 2,
+      "setting": "4x16",
+      "condition": "experience_on",
+      "num_paths": 64,
+      "summary": {
+        "min_cost_index": 36,
+        "min_cost": -0.27671733498573303,
+        "rollout_error_at_min_cost": 0.11406378448009491,
+        "min_error_index": 22,
+        "min_rollout_error": 0.02720126137137413,
+        "cost_at_min_error": -0.2657124698162079,
+        "min_expert_action_error_index": 64,
+        "min_expert_action_error": 0.5783581137657166,
+        "rollout_error_at_min_expert_action_error": 0.11863236129283905,
+        "same_selected_path": false
+      },
+      "task_csv": "/root/projects/LeFlow/analysis/inference_trace/pusht_h10_phase2/20260926_135437/task_002_all_settings_paths.csv",
+      "task_plot": "/root/projects/LeFlow/analysis/inference_trace/pusht_h10_phase2/20260926_135437/task_002_all_settings_comparison.png"
+    },
+    {
+      "task_id": 3,
+      "setting": "64x1",
+      "condition": "experience_off",
+      "num_paths": 64,
+      "summary": {
+        "min_cost_index": 63,
+        "min_cost": -0.3692883849143982,
+        "rollout_error_at_min_cost": 0.1721508949995041,
+        "min_error_index": 21,
+        "min_rollout_error": 0.08227044343948364,
+        "cost_at_min_error": -0.3348921537399292,
+        "min_expert_action_error_index": 7,
+        "min_expert_action_error": 0.4679734706878662,
+        "rollout_error_at_min_expert_action_error": 0.17839376628398895,
+        "same_selected_path": false
+      },
+      "task_csv": "/root/projects/LeFlow/analysis/inference_trace/pusht_h10_phase2/20260926_135437/task_003_all_settings_paths.csv",
+      "task_plot": "/root/projects/LeFlow/analysis/inference_trace/pusht_h10_phase2/20260926_135437/task_003_all_settings_comparison.png"
+    },
+    {
+      "task_id": 3,
+      "setting": "32x2",
+      "condition": "experience_on",
+      "num_paths": 64,
+      "summary": {
+        "min_cost_index": 63,
+        "min_cost": -0.36861348152160645,
+        "rollout_error_at_min_cost": 0.14594630897045135,
+        "min_error_index": 21,
+        "min_rollout_error": 0.0822705328464508,
+        "cost_at_min_error": -0.334892213344574,
+        "min_expert_action_error_index": 7,
+        "min_expert_action_error": 0.46797335147857666,
+        "rollout_error_at_min_expert_action_error": 0.17839381098747253,
+        "same_selected_path": false
+      },
+      "task_csv": "/root/projects/LeFlow/analysis/inference_trace/pusht_h10_phase2/20260926_135437/task_003_all_settings_paths.csv",
+      "task_plot": "/root/projects/LeFlow/analysis/inference_trace/pusht_h10_phase2/20260926_135437/task_003_all_settings_comparison.png"
+    },
+    {
+      "task_id": 3,
+      "setting": "16x4",
+      "condition": "experience_on",
+      "num_paths": 64,
+      "summary": {
+        "min_cost_index": 63,
+        "min_cost": -0.36871179938316345,
+        "rollout_error_at_min_cost": 0.14590397477149963,
+        "min_error_index": 21,
+        "min_rollout_error": 0.08961407840251923,
+        "cost_at_min_error": -0.33466607332229614,
+        "min_expert_action_error_index": 7,
+        "min_expert_action_error": 0.4679734408855438,
+        "rollout_error_at_min_expert_action_error": 0.17839393019676208,
+        "same_selected_path": false
+      },
+      "task_csv": "/root/projects/LeFlow/analysis/inference_trace/pusht_h10_phase2/20260926_135437/task_003_all_settings_paths.csv",
+      "task_plot": "/root/projects/LeFlow/analysis/inference_trace/pusht_h10_phase2/20260926_135437/task_003_all_settings_comparison.png"
+    },
+    {
+      "task_id": 3,
+      "setting": "8x8",
+      "condition": "experience_on",
+      "num_paths": 64,
+      "summary": {
+        "min_cost_index": 63,
+        "min_cost": -0.3687090277671814,
+        "rollout_error_at_min_cost": 0.14595894515514374,
+        "min_error_index": 21,
+        "min_rollout_error": 0.08960817754268646,
+        "cost_at_min_error": -0.33465713262557983,
+        "min_expert_action_error_index": 7,
+        "min_expert_action_error": 0.4679732322692871,
+        "rollout_error_at_min_expert_action_error": 0.17839376628398895,
+        "same_selected_path": false
+      },
+      "task_csv": "/root/projects/LeFlow/analysis/inference_trace/pusht_h10_phase2/20260926_135437/task_003_all_settings_paths.csv",
+      "task_plot": "/root/projects/LeFlow/analysis/inference_trace/pusht_h10_phase2/20260926_135437/task_003_all_settings_comparison.png"
+    },
+    {
+      "task_id": 3,
+      "setting": "4x16",
+      "condition": "experience_on",
+      "num_paths": 64,
+      "summary": {
+        "min_cost_index": 63,
+        "min_cost": -0.3686966300010681,
+        "rollout_error_at_min_cost": 0.14596067368984222,
+        "min_error_index": 21,
+        "min_rollout_error": 0.08963718265295029,
+        "cost_at_min_error": -0.3346221446990967,
+        "min_expert_action_error_index": 7,
+        "min_expert_action_error": 0.4488990604877472,
+        "rollout_error_at_min_expert_action_error": 0.18533644080162048,
+        "same_selected_path": false
+      },
+      "task_csv": "/root/projects/LeFlow/analysis/inference_trace/pusht_h10_phase2/20260926_135437/task_003_all_settings_paths.csv",
+      "task_plot": "/root/projects/LeFlow/analysis/inference_trace/pusht_h10_phase2/20260926_135437/task_003_all_settings_comparison.png"
+    },
+    {
+      "task_id": 4,
+      "setting": "64x1",
+      "condition": "experience_off",
+      "num_paths": 64,
+      "summary": {
+        "min_cost_index": 41,
+        "min_cost": -0.2735547721385956,
+        "rollout_error_at_min_cost": 0.0878257006406784,
+        "min_error_index": 44,
+        "min_rollout_error": 0.02244776487350464,
+        "cost_at_min_error": -0.2544921934604645,
+        "min_expert_action_error_index": 13,
+        "min_expert_action_error": 0.6909706592559814,
+        "rollout_error_at_min_expert_action_error": 0.05747421830892563,
+        "same_selected_path": false
+      },
+      "task_csv": "/root/projects/LeFlow/analysis/inference_trace/pusht_h10_phase2/20260926_135437/task_004_all_settings_paths.csv",
+      "task_plot": "/root/projects/LeFlow/analysis/inference_trace/pusht_h10_phase2/20260926_135437/task_004_all_settings_comparison.png"
+    },
+    {
+      "task_id": 4,
+      "setting": "32x2",
+      "condition": "experience_on",
+      "num_paths": 64,
+      "summary": {
+        "min_cost_index": 41,
+        "min_cost": -0.2755548655986786,
+        "rollout_error_at_min_cost": 0.08292841911315918,
+        "min_error_index": 44,
+        "min_rollout_error": 0.020026331767439842,
+        "cost_at_min_error": -0.25795120000839233,
+        "min_expert_action_error_index": 13,
+        "min_expert_action_error": 0.6909705400466919,
+        "rollout_error_at_min_expert_action_error": 0.05747425556182861,
+        "same_selected_path": false
+      },
+      "task_csv": "/root/projects/LeFlow/analysis/inference_trace/pusht_h10_phase2/20260926_135437/task_004_all_settings_paths.csv",
+      "task_plot": "/root/projects/LeFlow/analysis/inference_trace/pusht_h10_phase2/20260926_135437/task_004_all_settings_comparison.png"
+    },
+    {
+      "task_id": 4,
+      "setting": "16x4",
+      "condition": "experience_on",
+      "num_paths": 64,
+      "summary": {
+        "min_cost_index": 41,
+        "min_cost": -0.27555614709854126,
+        "rollout_error_at_min_cost": 0.08293920755386353,
+        "min_error_index": 44,
+        "min_rollout_error": 0.020029470324516296,
+        "cost_at_min_error": -0.2579442858695984,
+        "min_expert_action_error_index": 13,
+        "min_expert_action_error": 0.690970778465271,
+        "rollout_error_at_min_expert_action_error": 0.057474285364151,
+        "same_selected_path": false
+      },
+      "task_csv": "/root/projects/LeFlow/analysis/inference_trace/pusht_h10_phase2/20260926_135437/task_004_all_settings_paths.csv",
+      "task_plot": "/root/projects/LeFlow/analysis/inference_trace/pusht_h10_phase2/20260926_135437/task_004_all_settings_comparison.png"
+    },
+    {
+      "task_id": 4,
+      "setting": "8x8",
+      "condition": "experience_on",
+      "num_paths": 64,
+      "summary": {
+        "min_cost_index": 41,
+        "min_cost": -0.2755565643310547,
+        "rollout_error_at_min_cost": 0.08294305205345154,
+        "min_error_index": 44,
+        "min_rollout_error": 0.020030677318572998,
+        "cost_at_min_error": -0.2579352557659149,
+        "min_expert_action_error_index": 13,
+        "min_expert_action_error": 0.6765915751457214,
+        "rollout_error_at_min_expert_action_error": 0.058387063443660736,
+        "same_selected_path": false
+      },
+      "task_csv": "/root/projects/LeFlow/analysis/inference_trace/pusht_h10_phase2/20260926_135437/task_004_all_settings_paths.csv",
+      "task_plot": "/root/projects/LeFlow/analysis/inference_trace/pusht_h10_phase2/20260926_135437/task_004_all_settings_comparison.png"
+    },
+    {
+      "task_id": 4,
+      "setting": "4x16",
+      "condition": "experience_on",
+      "num_paths": 64,
+      "summary": {
+        "min_cost_index": 41,
+        "min_cost": -0.2755560576915741,
+        "rollout_error_at_min_cost": 0.08294743299484253,
+        "min_error_index": 44,
+        "min_rollout_error": 0.02003052830696106,
+        "cost_at_min_error": -0.2579333484172821,
+        "min_expert_action_error_index": 13,
+        "min_expert_action_error": 0.6767553091049194,
+        "rollout_error_at_min_expert_action_error": 0.05832081660628319,
+        "same_selected_path": false
+      },
+      "task_csv": "/root/projects/LeFlow/analysis/inference_trace/pusht_h10_phase2/20260926_135437/task_004_all_settings_paths.csv",
+      "task_plot": "/root/projects/LeFlow/analysis/inference_trace/pusht_h10_phase2/20260926_135437/task_004_all_settings_comparison.png"
+    },
+    {
+      "task_id": 5,
+      "setting": "64x1",
+      "condition": "experience_off",
+      "num_paths": 64,
+      "summary": {
+        "min_cost_index": 9,
+        "min_cost": -0.39768537878990173,
+        "rollout_error_at_min_cost": 0.06877180933952332,
+        "min_error_index": 8,
+        "min_rollout_error": 0.03046872839331627,
+        "cost_at_min_error": -0.3912649154663086,
+        "min_expert_action_error_index": 1,
+        "min_expert_action_error": 0.1521594226360321,
+        "rollout_error_at_min_expert_action_error": 0.16304120421409607,
+        "same_selected_path": false
+      },
+      "task_csv": "/root/projects/LeFlow/analysis/inference_trace/pusht_h10_phase2/20260926_135437/task_005_all_settings_paths.csv",
+      "task_plot": "/root/projects/LeFlow/analysis/inference_trace/pusht_h10_phase2/20260926_135437/task_005_all_settings_comparison.png"
+    },
+    {
+      "task_id": 5,
+      "setting": "32x2",
+      "condition": "experience_on",
+      "num_paths": 64,
+      "summary": {
+        "min_cost_index": 9,
+        "min_cost": -0.3976854383945465,
+        "rollout_error_at_min_cost": 0.06877189129590988,
+        "min_error_index": 8,
+        "min_rollout_error": 0.030468862503767014,
+        "cost_at_min_error": -0.39126479625701904,
+        "min_expert_action_error_index": 57,
+        "min_expert_action_error": 0.15052619576454163,
+        "rollout_error_at_min_expert_action_error": 0.23100438714027405,
+        "same_selected_path": false
+      },
+      "task_csv": "/root/projects/LeFlow/analysis/inference_trace/pusht_h10_phase2/20260926_135437/task_005_all_settings_paths.csv",
+      "task_plot": "/root/projects/LeFlow/analysis/inference_trace/pusht_h10_phase2/20260926_135437/task_005_all_settings_comparison.png"
+    },
+    {
+      "task_id": 5,
+      "setting": "16x4",
+      "condition": "experience_on",
+      "num_paths": 64,
+      "summary": {
+        "min_cost_index": 9,
+        "min_cost": -0.39768537878990173,
+        "rollout_error_at_min_cost": 0.0687718540430069,
+        "min_error_index": 8,
+        "min_rollout_error": 0.03046875074505806,
+        "cost_at_min_error": -0.3912648558616638,
+        "min_expert_action_error_index": 57,
+        "min_expert_action_error": 0.15055561065673828,
+        "rollout_error_at_min_expert_action_error": 0.23110604286193848,
+        "same_selected_path": false
+      },
+      "task_csv": "/root/projects/LeFlow/analysis/inference_trace/pusht_h10_phase2/20260926_135437/task_005_all_settings_paths.csv",
+      "task_plot": "/root/projects/LeFlow/analysis/inference_trace/pusht_h10_phase2/20260926_135437/task_005_all_settings_comparison.png"
+    },
+    {
+      "task_id": 5,
+      "setting": "8x8",
+      "condition": "experience_on",
+      "num_paths": 64,
+      "summary": {
+        "min_cost_index": 9,
+        "min_cost": -0.3972952663898468,
+        "rollout_error_at_min_cost": 0.08164361119270325,
+        "min_error_index": 8,
+        "min_rollout_error": 0.03046869859099388,
+        "cost_at_min_error": -0.39126473665237427,
+        "min_expert_action_error_index": 57,
+        "min_expert_action_error": 0.15054981410503387,
+        "rollout_error_at_min_expert_action_error": 0.2311830222606659,
+        "same_selected_path": false
+      },
+      "task_csv": "/root/projects/LeFlow/analysis/inference_trace/pusht_h10_phase2/20260926_135437/task_005_all_settings_paths.csv",
+      "task_plot": "/root/projects/LeFlow/analysis/inference_trace/pusht_h10_phase2/20260926_135437/task_005_all_settings_comparison.png"
+    },
+    {
+      "task_id": 5,
+      "setting": "4x16",
+      "condition": "experience_on",
+      "num_paths": 64,
+      "summary": {
+        "min_cost_index": 9,
+        "min_cost": -0.39730319380760193,
+        "rollout_error_at_min_cost": 0.08169078826904297,
+        "min_error_index": 8,
+        "min_rollout_error": 0.026999136433005333,
+        "cost_at_min_error": -0.39067304134368896,
+        "min_expert_action_error_index": 57,
+        "min_expert_action_error": 0.15054886043071747,
+        "rollout_error_at_min_expert_action_error": 0.23119056224822998,
+        "same_selected_path": false
+      },
+      "task_csv": "/root/projects/LeFlow/analysis/inference_trace/pusht_h10_phase2/20260926_135437/task_005_all_settings_paths.csv",
+      "task_plot": "/root/projects/LeFlow/analysis/inference_trace/pusht_h10_phase2/20260926_135437/task_005_all_settings_comparison.png"
+    },
+    {
+      "task_id": 6,
+      "setting": "64x1",
+      "condition": "experience_off",
+      "num_paths": 64,
+      "summary": {
+        "min_cost_index": 50,
+        "min_cost": -0.32494300603866577,
+        "rollout_error_at_min_cost": 0.5061616897583008,
+        "min_error_index": 63,
+        "min_rollout_error": 0.0062083713710308075,
+        "cost_at_min_error": -0.3158831298351288,
+        "min_expert_action_error_index": 64,
+        "min_expert_action_error": 0.2883039116859436,
+        "rollout_error_at_min_expert_action_error": 0.12874160706996918,
+        "same_selected_path": false
+      },
+      "task_csv": "/root/projects/LeFlow/analysis/inference_trace/pusht_h10_phase2/20260926_135437/task_006_all_settings_paths.csv",
+      "task_plot": "/root/projects/LeFlow/analysis/inference_trace/pusht_h10_phase2/20260926_135437/task_006_all_settings_comparison.png"
+    },
+    {
+      "task_id": 6,
+      "setting": "32x2",
+      "condition": "experience_on",
+      "num_paths": 64,
+      "summary": {
+        "min_cost_index": 50,
+        "min_cost": -0.3247266113758087,
+        "rollout_error_at_min_cost": 0.46827492117881775,
+        "min_error_index": 63,
+        "min_rollout_error": 0.004715660121291876,
+        "cost_at_min_error": -0.31616777181625366,
+        "min_expert_action_error_index": 64,
+        "min_expert_action_error": 0.2853773832321167,
+        "rollout_error_at_min_expert_action_error": 0.10491108894348145,
+        "same_selected_path": false
+      },
+      "task_csv": "/root/projects/LeFlow/analysis/inference_trace/pusht_h10_phase2/20260926_135437/task_006_all_settings_paths.csv",
+      "task_plot": "/root/projects/LeFlow/analysis/inference_trace/pusht_h10_phase2/20260926_135437/task_006_all_settings_comparison.png"
+    },
+    {
+      "task_id": 6,
+      "setting": "16x4",
+      "condition": "experience_on",
+      "num_paths": 64,
+      "summary": {
+        "min_cost_index": 50,
+        "min_cost": -0.32473593950271606,
+        "rollout_error_at_min_cost": 0.46827107667922974,
+        "min_error_index": 63,
+        "min_rollout_error": 0.004714998882263899,
+        "cost_at_min_error": -0.31616663932800293,
+        "min_expert_action_error_index": 64,
+        "min_expert_action_error": 0.28539562225341797,
+        "rollout_error_at_min_expert_action_error": 0.10486656427383423,
+        "same_selected_path": false
+      },
+      "task_csv": "/root/projects/LeFlow/analysis/inference_trace/pusht_h10_phase2/20260926_135437/task_006_all_settings_paths.csv",
+      "task_plot": "/root/projects/LeFlow/analysis/inference_trace/pusht_h10_phase2/20260926_135437/task_006_all_settings_comparison.png"
+    },
+    {
+      "task_id": 6,
+      "setting": "8x8",
+      "condition": "experience_on",
+      "num_paths": 64,
+      "summary": {
+        "min_cost_index": 50,
+        "min_cost": -0.3247360587120056,
+        "rollout_error_at_min_cost": 0.46826696395874023,
+        "min_error_index": 63,
+        "min_rollout_error": 0.0047144219279289246,
+        "cost_at_min_error": -0.3161678910255432,
+        "min_expert_action_error_index": 64,
+        "min_expert_action_error": 0.28538817167282104,
+        "rollout_error_at_min_expert_action_error": 0.10484302043914795,
+        "same_selected_path": false
+      },
+      "task_csv": "/root/projects/LeFlow/analysis/inference_trace/pusht_h10_phase2/20260926_135437/task_006_all_settings_paths.csv",
+      "task_plot": "/root/projects/LeFlow/analysis/inference_trace/pusht_h10_phase2/20260926_135437/task_006_all_settings_comparison.png"
+    },
+    {
+      "task_id": 6,
+      "setting": "4x16",
+      "condition": "experience_on",
+      "num_paths": 64,
+      "summary": {
+        "min_cost_index": 50,
+        "min_cost": -0.32473546266555786,
+        "rollout_error_at_min_cost": 0.4682583808898926,
+        "min_error_index": 63,
+        "min_rollout_error": 0.00471436558291316,
+        "cost_at_min_error": -0.316167414188385,
+        "min_expert_action_error_index": 64,
+        "min_expert_action_error": 0.28538355231285095,
+        "rollout_error_at_min_expert_action_error": 0.10485152900218964,
+        "same_selected_path": false
+      },
+      "task_csv": "/root/projects/LeFlow/analysis/inference_trace/pusht_h10_phase2/20260926_135437/task_006_all_settings_paths.csv",
+      "task_plot": "/root/projects/LeFlow/analysis/inference_trace/pusht_h10_phase2/20260926_135437/task_006_all_settings_comparison.png"
+    },
+    {
+      "task_id": 7,
+      "setting": "64x1",
+      "condition": "experience_off",
+      "num_paths": 64,
+      "summary": {
+        "min_cost_index": 30,
+        "min_cost": -0.24343104660511017,
+        "rollout_error_at_min_cost": 1.910498023033142,
+        "min_error_index": 15,
+        "min_rollout_error": 1.0097053050994873,
+        "cost_at_min_error": -0.2304217368364334,
+        "min_expert_action_error_index": 27,
+        "min_expert_action_error": 0.29938259720802307,
+        "rollout_error_at_min_expert_action_error": 1.8933762311935425,
+        "same_selected_path": false
+      },
+      "task_csv": "/root/projects/LeFlow/analysis/inference_trace/pusht_h10_phase2/20260926_135437/task_007_all_settings_paths.csv",
+      "task_plot": "/root/projects/LeFlow/analysis/inference_trace/pusht_h10_phase2/20260926_135437/task_007_all_settings_comparison.png"
+    },
+    {
+      "task_id": 7,
+      "setting": "32x2",
+      "condition": "experience_on",
+      "num_paths": 64,
+      "summary": {
+        "min_cost_index": 30,
+        "min_cost": -0.24343113601207733,
+        "rollout_error_at_min_cost": 1.9104994535446167,
+        "min_error_index": 15,
+        "min_rollout_error": 1.0097005367279053,
+        "cost_at_min_error": -0.2304217368364334,
+        "min_expert_action_error_index": 27,
+        "min_expert_action_error": 0.2993825376033783,
+        "rollout_error_at_min_expert_action_error": 1.8933757543563843,
+        "same_selected_path": false
+      },
+      "task_csv": "/root/projects/LeFlow/analysis/inference_trace/pusht_h10_phase2/20260926_135437/task_007_all_settings_paths.csv",
+      "task_plot": "/root/projects/LeFlow/analysis/inference_trace/pusht_h10_phase2/20260926_135437/task_007_all_settings_comparison.png"
+    },
+    {
+      "task_id": 7,
+      "setting": "16x4",
+      "condition": "experience_on",
+      "num_paths": 64,
+      "summary": {
+        "min_cost_index": 30,
+        "min_cost": -0.24346207082271576,
+        "rollout_error_at_min_cost": 1.8786044120788574,
+        "min_error_index": 15,
+        "min_rollout_error": 1.0096999406814575,
+        "cost_at_min_error": -0.2304217368364334,
+        "min_expert_action_error_index": 27,
+        "min_expert_action_error": 0.2995093762874603,
+        "rollout_error_at_min_expert_action_error": 1.8599295616149902,
+        "same_selected_path": false
+      },
+      "task_csv": "/root/projects/LeFlow/analysis/inference_trace/pusht_h10_phase2/20260926_135437/task_007_all_settings_paths.csv",
+      "task_plot": "/root/projects/LeFlow/analysis/inference_trace/pusht_h10_phase2/20260926_135437/task_007_all_settings_comparison.png"
+    },
+    {
+      "task_id": 7,
+      "setting": "8x8",
+      "condition": "experience_on",
+      "num_paths": 64,
+      "summary": {
+        "min_cost_index": 30,
+        "min_cost": -0.2434513121843338,
+        "rollout_error_at_min_cost": 1.8788036108016968,
+        "min_error_index": 15,
+        "min_rollout_error": 0.9527262449264526,
+        "cost_at_min_error": -0.22920508682727814,
+        "min_expert_action_error_index": 27,
+        "min_expert_action_error": 0.2995144724845886,
+        "rollout_error_at_min_expert_action_error": 1.8601014614105225,
+        "same_selected_path": false
+      },
+      "task_csv": "/root/projects/LeFlow/analysis/inference_trace/pusht_h10_phase2/20260926_135437/task_007_all_settings_paths.csv",
+      "task_plot": "/root/projects/LeFlow/analysis/inference_trace/pusht_h10_phase2/20260926_135437/task_007_all_settings_comparison.png"
+    },
+    {
+      "task_id": 7,
+      "setting": "4x16",
+      "condition": "experience_on",
+      "num_paths": 64,
+      "summary": {
+        "min_cost_index": 30,
+        "min_cost": -0.2434488981962204,
+        "rollout_error_at_min_cost": 1.8788344860076904,
+        "min_error_index": 15,
+        "min_rollout_error": 0.9529942274093628,
+        "cost_at_min_error": -0.2291889637708664,
+        "min_expert_action_error_index": 27,
+        "min_expert_action_error": 0.2995133697986603,
+        "rollout_error_at_min_expert_action_error": 1.860108733177185,
+        "same_selected_path": false
+      },
+      "task_csv": "/root/projects/LeFlow/analysis/inference_trace/pusht_h10_phase2/20260926_135437/task_007_all_settings_paths.csv",
+      "task_plot": "/root/projects/LeFlow/analysis/inference_trace/pusht_h10_phase2/20260926_135437/task_007_all_settings_comparison.png"
+    }
+  ],
+  "all_paths_csv": "/root/projects/LeFlow/analysis/inference_trace/pusht_h10_phase2/20260926_135437/all_paths.csv"
+}

@@ -1,0 +1,46 @@
+13:54:44 | INFO  | __init__.py | JAX version 0.6.2 available.
+13:54:47 | INFO  | atomic_chec~| [atomic_save] installed crash-safe checkpoint plugin (write to sibling .tmp + fsync + atomic rename)
+/root/miniconda3/envs/lewm/lib/python3.10/site-packages/lance/__init__.py:355: UserWarning: lance is not fork-safe. If you are using multiprocessing, use spawn or forkserver instead.
+  warnings.warn(
+task=0 setting=64x1 condition=experience_off min_error=0.0073
+task=0 setting=32x2 condition=experience_on min_error=0.0073
+task=0 setting=16x4 condition=experience_on min_error=0.0073
+task=0 setting=8x8 condition=experience_on min_error=0.0079
+task=0 setting=4x16 condition=experience_on min_error=0.0079
+task=1 setting=64x1 condition=experience_off min_error=0.0166
+task=1 setting=32x2 condition=experience_on min_error=0.0155
+task=1 setting=16x4 condition=experience_on min_error=0.0155
+task=1 setting=8x8 condition=experience_on min_error=0.0155
+task=1 setting=4x16 condition=experience_on min_error=0.0155
+task=2 setting=64x1 condition=experience_off min_error=0.0229
+task=2 setting=32x2 condition=experience_on min_error=0.0229
+task=2 setting=16x4 condition=experience_on min_error=0.0274
+task=2 setting=8x8 condition=experience_on min_error=0.0273
+task=2 setting=4x16 condition=experience_on min_error=0.0272
+task=3 setting=64x1 condition=experience_off min_error=0.0823
+task=3 setting=32x2 condition=experience_on min_error=0.0823
+task=3 setting=16x4 condition=experience_on min_error=0.0896
+task=3 setting=8x8 condition=experience_on min_error=0.0896
+task=3 setting=4x16 condition=experience_on min_error=0.0896
+task=4 setting=64x1 condition=experience_off min_error=0.0224
+task=4 setting=32x2 condition=experience_on min_error=0.0200
+task=4 setting=16x4 condition=experience_on min_error=0.0200
+task=4 setting=8x8 condition=experience_on min_error=0.0200
+task=4 setting=4x16 condition=experience_on min_error=0.0200
+task=5 setting=64x1 condition=experience_off min_error=0.0305
+task=5 setting=32x2 condition=experience_on min_error=0.0305
+task=5 setting=16x4 condition=experience_on min_error=0.0305
+task=5 setting=8x8 condition=experience_on min_error=0.0305
+task=5 setting=4x16 condition=experience_on min_error=0.0270
+task=6 setting=64x1 condition=experience_off min_error=0.0062
+task=6 setting=32x2 condition=experience_on min_error=0.0047
+task=6 setting=16x4 condition=experience_on min_error=0.0047
+task=6 setting=8x8 condition=experience_on min_error=0.0047
+task=6 setting=4x16 condition=experience_on min_error=0.0047
+task=7 setting=64x1 condition=experience_off min_error=1.0097
+task=7 setting=32x2 condition=experience_on min_error=1.0097
+task=7 setting=16x4 condition=experience_on min_error=1.0097
+task=7 setting=8x8 condition=experience_on min_error=0.9527
+task=7 setting=4x16 condition=experience_on min_error=0.9530
+summary_written=/root/projects/LeFlow/analysis/inference_trace/pusht_h10_phase2/20260926_135437/summary.json
+Artifacts written to: /root/projects/LeFlow/analysis/inference_trace/pusht_h10_phase2/20260926_135437
