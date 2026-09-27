@@ -7,6 +7,7 @@ import numpy as np
 import stable_pretraining as spt
 import stable_worldmodel as swm
 import torch
+import torch.nn.functional as F
 from omegaconf import DictConfig, OmegaConf, open_dict
 
 from latent_planner import (
@@ -50,6 +51,26 @@ def metric_float(value) -> float:
     if torch.is_tensor(value):
         value = value.detach()
     return float(value)
+
+
+def memory_cost_distribution_wandb_data(costs: torch.Tensor) -> dict[str, Any]:
+    """Build compact W&B summaries for the current synthetic memory bank."""
+    import wandb
+
+    values = costs.detach().float().flatten().cpu()
+    prefix = "train/experience_cost_distribution"
+    log_data: dict[str, Any] = {
+        f"{prefix}/histogram": wandb.Histogram(values.numpy()),
+        f"{prefix}/mean": float(values.mean()),
+        f"{prefix}/std": float(values.std(unbiased=False)),
+        f"{prefix}/min": float(values.min()),
+        f"{prefix}/max": float(values.max()),
+    }
+    for quantile in (0.1, 0.5, 0.9):
+        log_data[f"{prefix}/q{int(quantile * 100):02d}"] = float(
+            torch.quantile(values, quantile)
+        )
+    return log_data
 
 
 def freeze(module: torch.nn.Module) -> torch.nn.Module:
@@ -128,7 +149,9 @@ def save_finetuned_ltc_components(
     return latest_path
 
 
-def noised_path_all_after_start(path: torch.Tensor, noise_std: float) -> torch.Tensor:
+def noised_path_all_after_start(
+    path: torch.Tensor, noise_std: float | torch.Tensor
+) -> torch.Tensor:
     """Perturb every state after z_0, including the candidate endpoint."""
     latent_scale = path.detach().std(unbiased=False).clamp_min(1e-6)
     result = path.clone()
@@ -136,7 +159,9 @@ def noised_path_all_after_start(path: torch.Tensor, noise_std: float) -> torch.T
     return result
 
 
-def noised_path_intermediate(path: torch.Tensor, noise_std: float) -> torch.Tensor:
+def noised_path_intermediate(
+    path: torch.Tensor, noise_std: float | torch.Tensor
+) -> torch.Tensor:
     """Perturb intermediate states only; preserve z_0 and the endpoint."""
     if path.size(1) < 3:
         raise ValueError("intermediate-noise experiences require at least three path states")
@@ -157,9 +182,9 @@ def build_experience_bank(
     """Build a same-task, synthetic-noise experience bank for phase one.
 
     Every memory trajectory is paired with the query's own start and true goal.
-    Half are expected to have all states after z_0 perturbed (including their
-    endpoint); the other half preserve their endpoint and perturb only the
-    intermediate states.  No expert positive path and no goal mismatch is put
+    Each memory path independently and randomly chooses one perturbation:
+    all states after z_0, including its endpoint, or intermediate states only.
+    No expert positive path and no goal mismatch is put
     into the memory, so the planner cannot retrieve its supervision target.
     """
     batch_size, _, latent_dim = z_path.shape
@@ -174,15 +199,23 @@ def build_experience_bank(
     repeated_path = z_path[:, None].expand(-1, size, -1, -1).reshape(
         batch_size * size, z_path.size(1), latent_dim
     )
+    noise_min = float(cfg.experience.noise_std_min)
+    noise_max = float(cfg.experience.noise_std)
+    if noise_min < 0 or noise_max < noise_min:
+        raise ValueError("experience noise scales must satisfy 0 <= min <= max")
+    noise_strengths = torch.empty(
+        batch_size * size, 1, 1, device=z_path.device, dtype=z_path.dtype
+    ).uniform_(noise_min, noise_max)
     all_after_start = noised_path_all_after_start(
-        repeated_path, float(cfg.experience.noise_std)
+        repeated_path, noise_strengths
     )
     intermediate_only = noised_path_intermediate(
-        repeated_path, float(cfg.experience.noise_std)
+        repeated_path, noise_strengths
     )
-    choose_all_after_start = torch.rand(
-        batch_size * size, device=z_path.device
-    ) < float(cfg.experience.all_after_start_probability)
+    # Independent random choice per experience; no fixed per-bank mixture.
+    choose_all_after_start = torch.randint(
+        0, 2, (batch_size * size,), device=z_path.device
+    ).bool()
     candidate_paths = torch.where(
         choose_all_after_start[:, None, None], all_after_start, intermediate_only
     )
@@ -194,6 +227,92 @@ def build_experience_bank(
         features.reshape(batch_size, size, -1),
         costs.reshape(batch_size, size),
     )
+
+
+def experience_guidance_loss(
+    *,
+    flow: LatentPathFlow,
+    z_path: torch.Tensor,
+    path_features: torch.Tensor | None,
+    path_costs: torch.Tensor | None,
+    trajectory_encoder: TrajectoryEncoder,
+    cost_model: TrajectoryCostModel,
+    tau: float,
+) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
+    """Guide one differentiable denoising estimate using frozen LTC memory.
+
+    The cost-aware memory bank is detached. The frozen trajectory encoder still
+    passes gradients from the predicted path feature back to the flow model.
+    """
+    zero = z_path.new_zeros(())
+    metrics = {
+        "experience_rank_loss": zero,
+        "experience_explore_loss": zero,
+        "experience_g_mem": zero,
+        "experience_g_exp": zero,
+        "experience_explore_gate": zero,
+    }
+    if path_features is None or path_costs is None:
+        return zero, metrics
+    if tau <= 0:
+        raise ValueError("loss.experience.tau must be positive")
+
+    z_start = z_path[:, 0]
+    z_goal = z_path[:, -1]
+    target = z_path[:, 1:-1]
+    noise = torch.randn_like(target)
+    t = torch.rand(z_path.size(0), device=z_path.device, dtype=z_path.dtype)
+    x_t = (1 - t[:, None, None]) * noise + t[:, None, None] * target
+    predicted_velocity = flow(
+        x_t,
+        t,
+        z_start,
+        z_goal,
+        path_features=path_features,
+        path_costs=path_costs,
+    )
+    predicted_middle = x_t + (1 - t[:, None, None]) * predicted_velocity
+    predicted_path = torch.cat(
+        (z_start[:, None], predicted_middle, z_goal[:, None]),
+        dim=1,
+    )
+    predicted_feature = trajectory_encoder(predicted_path, z_goal)
+
+    memory_features = path_features.detach()
+    memory_costs = path_costs.detach()
+    similarities = F.cosine_similarity(
+        F.normalize(predicted_feature, dim=-1)[:, None, :],
+        F.normalize(memory_features, dim=-1),
+        dim=-1,
+    )
+    affinity = (similarities + 1) / 2
+    scaled_costs = memory_costs / tau
+    good_weights = torch.softmax(-scaled_costs, dim=1)
+    bad_weights = torch.softmax(scaled_costs, dim=1)
+
+    with torch.no_grad():
+        expert_feature = trajectory_encoder(z_path, z_goal)
+        expert_cost = cost_model(expert_feature).detach()
+        memory_std = memory_costs.std(dim=1, unbiased=False)
+        combined_costs = torch.cat((memory_costs, expert_cost[:, None]), dim=1)
+        expert_std = combined_costs.std(dim=1, unbiased=False)
+        g_mem = torch.tanh(memory_std / tau)
+        g_exp = torch.tanh(expert_std / tau)
+        explore_gate = torch.minimum(1 - g_mem, g_exp)
+
+    rank_loss = (
+        good_weights * (1 - affinity) + bad_weights * affinity
+    ).sum(dim=1)
+    explore_loss = affinity.mean(dim=1)
+    loss = (g_mem * rank_loss + explore_gate * explore_loss).mean()
+    metrics = {
+        "experience_rank_loss": rank_loss.detach().mean(),
+        "experience_explore_loss": explore_loss.detach().mean(),
+        "experience_g_mem": g_mem.detach().mean(),
+        "experience_g_exp": g_exp.detach().mean(),
+        "experience_explore_gate": explore_gate.detach().mean(),
+    }
+    return loss, metrics
 
 
 def default_episode_split_path(cfg: DictConfig) -> Path:
@@ -337,11 +456,21 @@ def step_batch(
     else:
         loss_dyn = z_path.new_tensor(0.0)
     loss_smooth = smoothness_loss(z_path)
+    loss_experience, experience_metrics = experience_guidance_loss(
+        flow=flow,
+        z_path=z_path,
+        path_features=path_features,
+        path_costs=path_costs,
+        trajectory_encoder=trajectory_encoder,
+        cost_model=cost_model,
+        tau=float(cfg.loss.experience.tau),
+    )
     total = (
         cfg.loss.flow.weight * loss_flow
         + cfg.loss.inverse.weight * loss_inv
         + cfg.loss.consistency.weight * loss_dyn
         + cfg.loss.smoothness.weight * loss_smooth
+        + cfg.loss.experience.weight * loss_experience
     )
     return {
         "loss": total,
@@ -349,6 +478,8 @@ def step_batch(
         "inverse_loss": loss_inv.detach(),
         "consistency_loss": loss_dyn.detach(),
         "smoothness_loss": loss_smooth.detach(),
+        "experience_loss": loss_experience.detach(),
+        **experience_metrics,
         "experience_size": z_path.new_tensor(
             0 if path_features is None else path_features.size(1)
         ),
@@ -356,6 +487,30 @@ def step_batch(
             z_path.new_zeros(())
             if path_costs is None
             else path_costs.detach().mean()
+        ),
+        "experience_cost_std": (
+            z_path.new_zeros(())
+            if path_costs is None
+            else path_costs.detach().std(unbiased=False)
+        ),
+        "experience_cost_q10": (
+            z_path.new_zeros(())
+            if path_costs is None
+            else torch.quantile(path_costs.detach(), 0.1)
+        ),
+        "experience_cost_q50": (
+            z_path.new_zeros(())
+            if path_costs is None
+            else torch.quantile(path_costs.detach(), 0.5)
+        ),
+        "experience_cost_q90": (
+            z_path.new_zeros(())
+            if path_costs is None
+            else torch.quantile(path_costs.detach(), 0.9)
+        ),
+        # Consumed by the training loop for histogram logging, never by loss.
+        "_experience_cost_samples": (
+            None if path_costs is None else path_costs.detach()
         ),
     }
 
@@ -388,6 +543,7 @@ def validate(
             cfg=cfg,
             device=device,
         )
+        out.pop("_experience_cost_samples", None)
         bs = batch["pixels"].size(0)
         count += bs
         for k, v in out.items():
@@ -424,6 +580,7 @@ def run(cfg: DictConfig):
         action_dim=action_dim,
         **cfg.inverse_dynamics,
     ).to(device)
+    ltc_payload = _checkpoint_load(cfg.experience.ltc_checkpoint)
     trajectory_encoder, cost_model = load_ltc_components(cfg, latent_dim, device)
     if trajectory_encoder.representation_dim != flow.path_feature_dim:
         raise ValueError(
@@ -462,6 +619,7 @@ def run(cfg: DictConfig):
                     cfg=cfg,
                     device=device,
                 )
+                experience_cost_samples = out.pop("_experience_cost_samples", None)
                 optimizer.zero_grad(set_to_none=True)
                 out["loss"].backward()
                 grad_norm = None
@@ -488,6 +646,18 @@ def run(cfg: DictConfig):
                     log_data["train/lr"] = optimizer.param_groups[0]["lr"]
                     if grad_norm is not None:
                         log_data["train/grad_norm"] = float(grad_norm)
+                    distribution_interval = int(
+                        cfg.wandb.memory_cost_distribution_interval
+                    )
+                    if (
+                        experience_cost_samples is not None
+                        and global_step % distribution_interval == 0
+                    ):
+                        log_data.update(
+                            memory_cost_distribution_wandb_data(
+                                experience_cost_samples
+                            )
+                        )
                     wandb_run.log(log_data, step=global_step)
 
                 if cfg.max_train_batches is not None and batch_idx + 1 >= cfg.max_train_batches:
@@ -523,28 +693,14 @@ def run(cfg: DictConfig):
                 inverse_dynamics=inverse_dynamics,
                 cfg=OmegaConf.to_container(cfg, resolve=True),
             )
-            payload["experience"] = {
-                "ltc_checkpoint": str(cfg.experience.ltc_checkpoint),
-                "trajectory_encoder_state_dict": trajectory_encoder.state_dict(),
-                "cost_model_state_dict": cost_model.state_dict(),
-            }
+            payload["experience"] = {"ltc": ltc_payload}
             epoch_path = run_dir / f"{cfg.output_model_name}_epoch_{epoch + 1}.pt"
             latest_path = run_dir / f"{cfg.output_model_name}.pt"
             print(f"epoch={epoch + 1} checkpoint_start path={epoch_path}", flush=True)
             torch.save(payload, epoch_path)
             torch.save(payload, latest_path)
-            ltc_path = save_finetuned_ltc_components(
-                run_dir=run_dir,
-                output_model_name=cfg.output_model_name,
-                epoch=epoch + 1,
-                lewm_checkpoint=str(cfg.lewm_checkpoint),
-                trajectory_encoder=trajectory_encoder,
-                cost_model=cost_model,
-                cfg=cfg,
-            )
             print(
-                f"epoch={epoch + 1} checkpoint_done path={latest_path} "
-                f"ltc={ltc_path}",
+                f"epoch={epoch + 1} checkpoint_done path={latest_path}",
                 flush=True,
             )
             if wandb_run is not None and cfg.wandb.log_model:

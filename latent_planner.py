@@ -57,13 +57,17 @@ def _resolve_checkpoint(path_or_name: str | Path) -> Path:
 
 
 def load_ltc_components_for_evaluation(
-    ltc_checkpoint: str | Path,
+    ltc_checkpoint: str | Path | dict[str, Any],
     *,
     latent_dim: int,
     device: torch.device,
 ) -> tuple[TrajectoryEncoder, TrajectoryCostModel]:
     """Load frozen encoder and cost model from one combined LTC checkpoint."""
-    payload = torch.load(ltc_checkpoint, map_location="cpu", weights_only=False)
+    payload = (
+        ltc_checkpoint
+        if isinstance(ltc_checkpoint, dict)
+        else torch.load(ltc_checkpoint, map_location="cpu", weights_only=False)
+    )
     if payload.get("format") != "latent_trajectory_cost_v2":
         raise ValueError("ltc_checkpoint is not a combined LTC checkpoint")
     encoder_payload = payload["trajectory_encoder"]
@@ -272,8 +276,9 @@ class LatentPathFlow(nn.Module):
 
     ``path_features`` is an encoded sequence of prior candidate paths with
     shape ``[B, N, path_feature_dim]``. Its paired ``path_costs[B, N]`` is
-    transformed into per-experience FiLM parameters that modulate *only* the
-    cross-attention values; keys remain pure retrieval/similarity features.
+    concatenated with the cost standard deviation of its memory bank before producing
+    per-experience FiLM parameters. They modulate *only* the cross-attention
+    values; keys remain pure retrieval/similarity features.
     """
 
     def __init__(
@@ -312,7 +317,9 @@ class LatentPathFlow(nn.Module):
         )
         self.path_feature_proj = nn.Linear(path_feature_dim, hidden_dim)
         self.cost_film = nn.Sequential(
-            nn.Linear(1, hidden_dim),
+            # Each value sees its own cost and the shared reliability signal
+            # Std(c_1, ..., c_N) for this experience bank.
+            nn.Linear(2, hidden_dim),
             nn.SiLU(),
             nn.Linear(hidden_dim, 2 * hidden_dim),
         )
@@ -328,7 +335,11 @@ class LatentPathFlow(nn.Module):
         self, path_features: torch.Tensor, path_costs: torch.Tensor
     ) -> torch.Tensor:
         values = self.path_feature_proj(path_features)
-        shift, scale = self.cost_film(path_costs[..., None].float()).chunk(2, dim=-1)
+        costs = path_costs.float()
+        memory_std = costs.std(dim=1, unbiased=False, keepdim=True)
+        std_per_path = memory_std.expand_as(costs)
+        cost_condition = torch.stack((costs, std_per_path), dim=-1)
+        shift, scale = self.cost_film(cost_condition).chunk(2, dim=-1)
         return values * (1 + scale) + shift
 
     def forward(
@@ -908,8 +919,8 @@ class ExperienceGuidedLatentPathSolver(LearnedLatentPathSolver):
             _resolve_checkpoint(self.checkpoint), map_location="cpu", weights_only=False
         )
         experience = payload.get("experience", {})
-        ltc_path = ltc_checkpoint or experience.get("ltc_checkpoint")
-        if not ltc_path:
+        ltc_path = ltc_checkpoint or experience.get("ltc")
+        if ltc_path is None:
             raise ValueError(
                 "Experience-guided evaluation requires an LTC checkpoint, either "
                 "in planner metadata or solver config."

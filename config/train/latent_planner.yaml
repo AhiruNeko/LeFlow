@@ -24,13 +24,16 @@ episode_split:
 
 wandb:
   enabled: True
-  project: lewm-latent-planner
+  project: leflow-dev
   entity: null
   name: ${output_model_name}_${planner.horizon}
   id: null
   resume: allow
   mode: online
   log_model: False
+  # Histograms are uploaded at this interval; scalar cost summaries are logged
+  # with every W&B training step.
+  memory_cost_distribution_interval: ${log_interval}
 
 loader:
   batch_size: 128
@@ -76,11 +79,11 @@ experience:
   # N=0 bypasses cross-attention for that batch.
   min_size: 0
   max_size: 64
-  # Latent-noise scale; used for both memory path types.
+  # Each memory path samples a latent-noise scale uniformly in this range.
+  noise_std_min: 0.02
   noise_std: 0.10
-  # Probability of a path whose all states after z_0, including its endpoint,
-  # are noised. Otherwise only intermediate states are noised.
-  all_after_start_probability: 0.5
+  # Per path, the perturbation type is independently sampled uniformly:
+  # either all states after z_0 or only intermediate states are noised.
 
 inverse_dynamics:
   hidden_dim: 512
@@ -97,6 +100,10 @@ loss:
     detach_inverse: False
   smoothness:
     weight: 0.0
+  experience:
+    # Frozen-LTC guidance for the flow model; cost lower is better.
+    weight: 0.02
+    tau: 1.0
 
 optimizer:
   lr: 1e-4

@@ -30,6 +30,10 @@ conda run -n lewm --no-capture-output python train_latent_planner.py \
   experience.ltc_checkpoint="${LTC_DIR}/latent_trajectory_cost_epoch_4.pt" \
   experience.min_size=0 \
   experience.max_size=2 \
+  experience.noise_std_min=0.02 \
+  experience.noise_std=0.10 \
+  loss.experience.weight=0.02 \
+  loss.experience.tau=1.0 \
   epochs=1 \
   max_train_batches=2 \
   val_batches=1 \

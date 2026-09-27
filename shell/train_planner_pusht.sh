@@ -7,7 +7,7 @@ LOG_FILE="logs/${TASK_NAME}_$(date +%Y%m%d_%H%M%S).log"
 exec > >(tee "$LOG_FILE") 2>&1
 
 # Set this to the same checkpoint root used by the completed H=10 LTC run.
-export STABLEWM_HOME=/root/projects/pusht
+export STABLEWM_HOME=/root/autodl-tmp/pusht
 export HYDRA_FULL_ERROR=1
 
 LTC_DIR="${STABLEWM_HOME}/latent_trajectory_cost/pusht_h10_ep10"
@@ -21,11 +21,13 @@ conda run -n lewm --no-capture-output python train_latent_planner.py \
   planner.max_horizon=20 \
   planner.action_block=5 \
   flow.path_feature_dim=256 \
-  experience.ltc_checkpoint="${LTC_DIR}/latent_trajectory_cost_epoch_4.pt" \
+  experience.ltc_checkpoint="${LTC_DIR}/latent_trajectory_cost_epoch_3.pt" \
   experience.min_size=0 \
   experience.max_size=64 \
+  experience.noise_std_min=0.02 \
   experience.noise_std=0.10 \
-  experience.all_after_start_probability=0.5 \
+  loss.experience.weight=0.02 \
+  loss.experience.tau=1.0 \
   epochs=10 \
   loader.batch_size=128 \
   subdir=latent_planner/pusht_phase1_h10_ep10
