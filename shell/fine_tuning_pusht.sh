@@ -11,26 +11,27 @@ export HYDRA_FULL_ERROR=1
 
 PLANNER_DIR="${STABLEWM_HOME}/latent_planner/pusht_phase1_h10_ep10"
 PLANNER_CHECKPOINT="${PLANNER_DIR}/latent_planner.pt"
-LTC_DIR="${STABLEWM_HOME}/latent_trajectory_cost/pusht_h10_ep10"
 
-# Phase-two closed-loop fine-tuning: collect 4 candidates across 16 rounds
-# (64-entry FIFO), then sparsely rollout-label 8 collected candidates for LTC.
+# Closed-loop phase two. Each batch samples candidates uniformly from 1..32
+# and runs ceil(64 / candidates) FIFO rounds.
 conda run -n lewm --no-capture-output python fine_tuning.py \
   planner_checkpoint="${PLANNER_CHECKPOINT}" \
-  experience.ltc_checkpoint="${LTC_DIR}/latent_trajectory_cost_epoch_4.pt" \
   data.dataset.name=pusht_expert_train \
   data.dataset.keys_to_load='[pixels,action,proprio,state]' \
   data.dataset.keys_to_cache='[action,proprio,state]' \
   planner.horizon=10 \
   planner.action_block=5 \
-  collection.samples_per_round=4 \
-  collection.rounds=16 \
+  collection.candidates_min=1 \
+  collection.candidates_max=32 \
   collection.flow_steps=16 \
   collection.max_size=64 \
   dynamic_ltc.sample_size=8 \
   dynamic_ltc.weight=0.5 \
-  epochs=1 \
-  max_train_batches=5000 \
-  checkpoint_interval_steps=500 \
+  loss.experience.weight=0.02 \
+  loss.experience.tau=1.0 \
+  epochs=3 \
+  max_train_batches=10000 \
+  validation_interval_steps=1000 \
+  val_batches=4 \
   loader.batch_size=32 \
   subdir=latent_planner_finetune/pusht_h10_phase2

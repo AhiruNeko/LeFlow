@@ -13,21 +13,23 @@ img_size: 224
 train_split: 0.9
 epochs: 1
 log_interval: 50
-# Save candidates for evaluation before the short adaptation budget is exhausted.
-checkpoint_interval_steps: 500
+val_batches: 4
+validation_interval_steps: 1000
 max_train_batches: 2000
 grad_clip_norm: 1.0
 lewm_history_size: 3
 
 wandb:
   enabled: true
-  project: lewm-latent-planner-finetune
+  project: leflow-dev
   entity: null
   name: fine_tuned_latent_planner_h10
   id: null
   resume: allow
   mode: online
   log_model: false
+  # Full FIFO-cost histograms are uploaded at this interval.
+  real_experience_cost_distribution_interval: ${log_interval}
 
 loader:
   batch_size: 32
@@ -61,16 +63,18 @@ planner:
   horizon: 10
   action_block: 5
 
-# No-gradient candidate collection, separate for every expert start/goal pair.
-# 4 paths × 16 rounds fills the 64-entry FIFO capacity.
+# Every collection independently samples candidates in [1, 32], then runs
+# ceil(max_size / candidates) FIFO rounds to fill the memory capacity.
 collection:
-  samples_per_round: 4
-  rounds: 16
+  candidates_min: 1
+  candidates_max: 32
   flow_steps: 16
   max_size: 64
 
 experience:
-  ltc_checkpoint: ???
+  # Null loads LTC embedded in planner_checkpoint. Set only for an explicit
+  # override with a separate combined LTC checkpoint.
+  ltc_checkpoint: null
 
 # These negatives are NOT placed in the Cross-Attention experience FIFO.
 # They retain the original LTC preference calibration while the planner and
@@ -97,6 +101,10 @@ loss:
     weight: 0.1
   ltc:
     weight: 1.0
+  experience:
+    # Same cost-aware memory guidance used in phase-one planner training.
+    weight: 0.02
+    tau: 1.0
   # Off by default. Enable only as an explicit representation regularization
   # ablation after the closed-loop baseline is stable.
   sigreg:

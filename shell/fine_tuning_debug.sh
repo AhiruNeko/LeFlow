@@ -11,25 +11,27 @@ export HYDRA_FULL_ERROR=1
 
 PLANNER_DIR="${STABLEWM_HOME}/latent_planner/pusht_phase1_h10_ep10"
 PLANNER_CHECKPOINT="${PLANNER_DIR}/latent_planner.pt"
-LTC_DIR="${STABLEWM_HOME}/latent_trajectory_cost/pusht_h10_ep10"
 
-# Smoke test: preserve H=10/checkpoint compatibility but minimize collection,
-# rollout labels, data loading, and parameter updates.
+# Smoke test: preserve bundled-checkpoint loading while minimizing collection,
+# rollout labels, validation, data loading, and parameter updates.
 conda run -n lewm --no-capture-output python fine_tuning.py \
   planner_checkpoint="${PLANNER_CHECKPOINT}" \
-  experience.ltc_checkpoint="${LTC_DIR}/latent_trajectory_cost_epoch_4.pt" \
   data.dataset.name=pusht_expert_train \
   data.dataset.keys_to_load='[pixels,action,proprio,state]' \
   data.dataset.keys_to_cache='[action,proprio,state]' \
   planner.horizon=10 \
   planner.action_block=5 \
-  collection.samples_per_round=1 \
-  collection.rounds=2 \
+  collection.candidates_min=1 \
+  collection.candidates_max=2 \
   collection.flow_steps=1 \
   collection.max_size=2 \
   dynamic_ltc.sample_size=2 \
+  loss.experience.weight=0.02 \
+  loss.experience.tau=1.0 \
   epochs=1 \
   max_train_batches=1 \
+  validation_interval_steps=1 \
+  val_batches=1 \
   loader.batch_size=2 \
   loader.num_workers=0 \
   loader.persistent_workers=false \
