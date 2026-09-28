@@ -108,7 +108,7 @@ loss:
   # Off by default. Enable only as an explicit representation regularization
   # ablation after the closed-loop baseline is stable.
   sigreg:
-    weight: 0.0
+    weight: 1.0e-4
     kwargs:
       knots: 17
       num_proj: 1024
