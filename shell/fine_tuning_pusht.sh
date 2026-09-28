@@ -29,7 +29,7 @@ conda run -n lewm --no-capture-output python fine_tuning.py \
   dynamic_ltc.weight=0.5 \
   loss.experience.weight=0.02 \
   loss.experience.tau=1.0 \
-  epochs=3 \
+  epochs=2 \
   max_train_batches=10000 \
   validation_interval_steps=1000 \
   val_batches=4 \

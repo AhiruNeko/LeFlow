@@ -1,14 +1,14 @@
 _target_: latent_planner.ExperienceGuidedLatentPathSolver
 checkpoint: ${policy}
 batch_size: 1
-flow_steps: 16
+flow_steps: 8
 rounds: 2
 samples_per_round: 32
 experience_max_size: 64
 # Before each guided planning round, bootstrap no-memory paths until FIFO has
 # at least this many entries. Set to 0 to disable bootstrap.
 min_experience_size: 0
-top_k: 8
+top_k: 64
 # LTC costs are used only to retrieve top-k candidates.  The final action is
 # always chosen by inverse dynamics + LeWM rollout goal distance.
 cost_threshold: 0

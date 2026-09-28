@@ -85,11 +85,11 @@ ltc:
   noise_weight: 1.0
   noise_std: 0.10
 
-# Sparse real-rollout calibration from the final collected FIFO bank.
+# Dynamic expert-path calibration from the final collected FIFO bank.
 dynamic_ltc:
   weight: 0.5
   sample_size: 8
-  # Ignore nearly tied rollout outcomes when creating pairwise labels.
+  # Ignore nearly tied expert-path distances when creating pairwise labels.
   label_margin: 0.001
 
 loss:

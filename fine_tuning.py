@@ -162,37 +162,91 @@ def ltc_anchor(path, enc, cost, cfg):
         mismatch_loss = pos.new_zeros(())
     noisy = cost(enc(noised_path(path, float(cfg.ltc.noise_std)), goal))
     noise_loss = preference_loss(pos, noisy, float(cfg.ltc.beta))
-    loss = float(cfg.ltc.goal_mismatch_weight) * mismatch_loss + float(cfg.ltc.noise_weight) * noise_loss
-    return (loss, pos_feat, {'positive_cost': pos.detach().mean(), 'mismatch_cost': mismatch.detach().mean(), 'noisy_cost': noisy.detach().mean(), 'mismatch_margin': (mismatch - pos).detach().mean(), 'noise_margin': (noisy - pos).detach().mean(), 'goal_mismatch_loss': mismatch_loss.detach(), 'noise_loss': noise_loss.detach()})
+    loss = (
+        float(cfg.ltc.goal_mismatch_weight) * mismatch_loss
+        + float(cfg.ltc.noise_weight) * noise_loss
+    )
+    return (
+        loss,
+        pos_feat,
+        pos,
+        {
+            "positive_cost": pos.detach().mean(),
+            "mismatch_cost": mismatch.detach().mean(),
+            "noisy_cost": noisy.detach().mean(),
+            "mismatch_margin": (mismatch - pos).detach().mean(),
+            "noise_margin": (noisy - pos).detach().mean(),
+            "goal_mismatch_loss": mismatch_loss.detach(),
+            "noise_loss": noise_loss.detach(),
+        },
+    )
+
 
 @torch.no_grad()
-def rollout_dynamic_labels(runtime, raw_memory, z_start, z_goal, cfg, gen):
-    """Sample collected paths and produce detached LeWM rollout quality labels."""
+def expert_path_dynamic_labels(raw_memory, expert_path, cfg, gen):
+    """Sample collected paths and label them by expert interior-path distance."""
     if raw_memory is None:
         return None, None
     b, m = raw_memory.shape[:2]
     count = min(int(cfg.dynamic_ltc.sample_size), m)
-    indices = torch.rand(b, m, device=raw_memory.device, generator=gen).argsort(dim=1)[:, :count]
-    gather = indices[:, :, None, None].expand(-1, -1, raw_memory.size(2), raw_memory.size(3))
+    indices = torch.rand(
+        b, m, device=raw_memory.device, generator=gen
+    ).argsort(dim=1)[:, :count]
+    gather = indices[:, :, None, None].expand(
+        -1, -1, raw_memory.size(2), raw_memory.size(3)
+    )
     paths = raw_memory.gather(1, gather)
-    actions = runtime.decode_actions(paths)
-    final_latent = runtime.rollout_final_latent(z_start, actions, int(cfg.lewm_history_size))
-    distance = (final_latent - z_goal[:, None]).square().mean(dim=-1)
+    # Candidate and expert paths share start and goal, so compare only the
+    # learned intermediate trajectory rather than diluting error with endpoints.
+    distance = (
+        paths[:, :, 1:-1] - expert_path[:, None, 1:-1]
+    ).square().mean(dim=(-1, -2))
     return paths, distance.detach()
 
-def dynamic_ltc_loss(paths, distances, goal, enc, cost, cfg):
-    """Rank sampled model paths using detached rollout terminal distances."""
-    if paths is None or distances is None:
-        return goal.new_zeros(()), goal.new_zeros(()), goal.new_zeros(())
+
+def dynamic_ltc_loss(paths, expert_distances, goal, expert_cost, enc, cost, cfg):
+    """Use expert-vs-path and better-path-vs-worse-path preference pairs."""
+    if paths is None or expert_distances is None:
+        zero = goal.new_zeros(())
+        return zero, zero, zero, zero, zero
     b, n, t, d = paths.shape
     flat_paths = paths.reshape(b * n, t, d)
     goals = goal[:, None].expand(-1, n, -1).reshape(b * n, d)
     predicted = cost(enc(flat_paths, goals)).reshape(b, n)
-    better = distances[:, :, None] + float(cfg.dynamic_ltc.label_margin) < distances[:, None, :]
-    if not bool(better.any()):
-        return predicted.new_zeros(()), predicted.detach().mean(), distances.mean()
-    loss = F.softplus(-(predicted[:, None, :] - predicted[:, :, None]) / float(cfg.ltc.beta))[better].mean()
-    return loss, predicted.detach().mean(), distances.mean()
+    beta = float(cfg.ltc.beta)
+    margin = float(cfg.dynamic_ltc.label_margin)
+
+    # Expert has distance zero. Any collected path farther than the label
+    # margin should receive a larger cost than that expert path.
+    worse_than_expert = expert_distances > margin
+    expert_pairs = F.softplus(
+        -(predicted - expert_cost[:, None]) / beta
+    )[worse_than_expert]
+    expert_loss = (
+        expert_pairs.mean() if expert_pairs.numel() else predicted.new_zeros(())
+    )
+
+    # Preserve relative quality among the collected, model-generated paths.
+    better = expert_distances[:, :, None] + margin < expert_distances[:, None, :]
+    path_pairs = F.softplus(
+        -(predicted[:, None, :] - predicted[:, :, None]) / beta
+    )[better]
+    path_loss = path_pairs.mean() if path_pairs.numel() else predicted.new_zeros(())
+
+    active = [
+        loss for loss, valid in (
+            (expert_loss, bool(worse_than_expert.any())),
+            (path_loss, bool(better.any())),
+        ) if valid
+    ]
+    loss = torch.stack(active).mean() if active else predicted.new_zeros(())
+    return (
+        loss,
+        predicted.detach().mean(),
+        expert_distances.mean(),
+        expert_loss.detach(),
+        path_loss.detach(),
+    )
 
 def train_step(batch, runtime, enc, cost, sigreg, cfg, device, gen):
     batch["action"] = torch.nan_to_num(batch["action"].to(device), 0.0)
@@ -232,12 +286,24 @@ def train_step(batch, runtime, enc, cost, sigreg, cfg, device, gen):
         else path.new_zeros(())
     )
 
-    static_ltc, pos_feat, metrics = ltc_anchor(path, enc, cost, cfg)
-    dynamic_paths, rollout_distance = rollout_dynamic_labels(
-        runtime, collected, path[:, 0], path[:, -1], cfg, gen
+    static_ltc, pos_feat, positive_cost, metrics = ltc_anchor(path, enc, cost, cfg)
+    dynamic_paths, expert_path_distance = expert_path_dynamic_labels(
+        collected, path, cfg, gen
     )
-    dynamic_ltc, dynamic_cost, dynamic_distance = dynamic_ltc_loss(
-        dynamic_paths, rollout_distance, path[:, -1], enc, cost, cfg
+    (
+        dynamic_ltc,
+        dynamic_cost,
+        dynamic_distance,
+        dynamic_expert_loss,
+        dynamic_pairwise_loss,
+    ) = dynamic_ltc_loss(
+        dynamic_paths,
+        expert_path_distance,
+        path[:, -1],
+        positive_cost,
+        enc,
+        cost,
+        cfg,
     )
     ltc = static_ltc + float(cfg.dynamic_ltc.weight) * dynamic_ltc
     reg = (
@@ -272,7 +338,9 @@ def train_step(batch, runtime, enc, cost, sigreg, cfg, device, gen):
         "static_ltc_loss": static_ltc.detach(),
         "dynamic_ltc_loss": dynamic_ltc.detach(),
         "dynamic_cost": dynamic_cost,
-        "dynamic_rollout_distance": dynamic_distance,
+        "dynamic_expert_path_distance": dynamic_distance,
+        "dynamic_expert_vs_path_loss": dynamic_expert_loss,
+        "dynamic_path_pairwise_loss": dynamic_pairwise_loss,
         "sigreg_loss": reg.detach(),
         "snapshot_round": path.new_tensor(snapshot_round),
         "memory_size": path.new_tensor(0 if bank is None else bank.size(1)),
