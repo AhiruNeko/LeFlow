@@ -17,7 +17,7 @@ export HYDRA_FULL_ERROR=1
 
 # Phase-two fine-tuned planner and jointly fine-tuned LTC components.
 PLANNER_DIR="${STABLEWM_HOME}/latent_planner_finetune/pusht_h10_phase2"
-PLANNER_CHECKPOINT="${PLANNER_DIR}/fine_tuned_latent_planner_step_11000.pt"
+PLANNER_CHECKPOINT="${PLANNER_DIR}/fine_tuned_latent_planner_step_6000.pt"
 RESULT_FILE="${TASK_NAME}_${RUN_ID}_results.txt"
 ARTIFACT_MARKER="${PLANNER_DIR}/.${TASK_NAME}_${RUN_ID}.start"
 touch "${ARTIFACT_MARKER}"

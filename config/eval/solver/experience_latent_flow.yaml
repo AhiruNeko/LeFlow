@@ -1,17 +1,19 @@
 _target_: latent_planner.ExperienceGuidedLatentPathSolver
 checkpoint: ${policy}
 batch_size: 1
-flow_steps: 8
-rounds: 2
-samples_per_round: 32
+flow_steps: 16
+rounds: 8
+samples_per_round: 8
 experience_max_size: 64
 # Before each guided planning round, bootstrap no-memory paths until FIFO has
 # at least this many entries. Set to 0 to disable bootstrap.
 min_experience_size: 0
 top_k: 64
-# LTC costs are used only to retrieve top-k candidates.  The final action is
-# always chosen by inverse dynamics + LeWM rollout goal distance.
-cost_threshold: 0
+# LTC is used only as a FIFO experience condition. Top-k maintenance,
+# early stopping, and final selection use mean nominal LeWM segment defect.
+# Initial PushT calibration: recent nominal-defect medians are about 0.008.
+# Tune with analyze_candidate_rollouts.py for a different checkpoint/task.
+segment_error_threshold: 0.007
 # null loads the combined LTC checkpoint recorded in the planner checkpoint.
 ltc_checkpoint: null
 device: "cuda"

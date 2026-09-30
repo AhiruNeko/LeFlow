@@ -534,17 +534,17 @@ class LatentPlannerRuntime(nn.Module):
         experience_max_size: int,
         min_experience_size: int,
         top_k: int,
-        cost_threshold: float | None,
+        segment_error_threshold: float | None,
         flow_steps: int,
         history_size: int = 3,
         generator: torch.Generator | None = None,
     ) -> dict[str, torch.Tensor]:
         """Generate candidate paths over multiple FIFO-memory flow rounds.
 
-        LTC costs choose a small candidate set only.  The final action plan is
-        selected independently by the original LeFlow inverse-dynamics + LeWM
-        rollout-to-goal score, so an LTC calibration error cannot directly
-        become the executed action.
+        LTC costs condition the FIFO experience memory only. Candidate Top-k
+        maintenance and final action selection use independent nominal LeWM
+        segment defects, so a scalar LTC calibration error cannot decide the
+        executed path.
         """
         if samples_per_round < 1 or rounds < 1:
             raise ValueError("samples_per_round and rounds must both be positive")
@@ -564,7 +564,8 @@ class LatentPlannerRuntime(nn.Module):
         memory_features: torch.Tensor | None = None
         memory_costs: torch.Tensor | None = None
         top_paths: torch.Tensor | None = None
-        top_costs: torch.Tensor | None = None
+        top_segment_errors: torch.Tensor | None = None
+        top_ltc_costs: torch.Tensor | None = None
         rounds_used = 0
         bootstrap_samples = 0
 
@@ -639,53 +640,66 @@ class LatentPlannerRuntime(nn.Module):
             # start/goal condition. The newest candidates replace the oldest.
             append_to_memory(candidate_features, candidate_costs)
 
+            # LTC remains an experience condition for future flow samples,
+            # but never ranks candidates. Candidate maintenance, early stop,
+            # and final selection all use nominal LeWM segment defects.
+            candidate_actions = self.decode_actions(candidates)
+            candidate_segment_errors = self.nominal_segment_rollout_error(
+                candidates, candidate_actions, history_size=history_size
+            )
             candidate_pool = candidates if top_paths is None else torch.cat(
                 [top_paths, candidates], dim=1
             )
-            cost_pool = candidate_costs if top_costs is None else torch.cat(
-                [top_costs, candidate_costs], dim=1
+            segment_error_pool = (
+                candidate_segment_errors
+                if top_segment_errors is None
+                else torch.cat([top_segment_errors, candidate_segment_errors], dim=1)
             )
-            keep = min(top_k, cost_pool.size(1))
-            top_costs, top_index = torch.topk(
-                cost_pool, k=keep, dim=1, largest=False, sorted=True
+            ltc_cost_pool = (
+                candidate_costs
+                if top_ltc_costs is None
+                else torch.cat([top_ltc_costs, candidate_costs], dim=1)
+            )
+            keep = min(top_k, segment_error_pool.size(1))
+            top_segment_errors, top_index = torch.topk(
+                segment_error_pool, k=keep, dim=1, largest=False, sorted=True
             )
             gather_index = top_index[:, :, None, None].expand(
                 -1, -1, candidate_pool.size(2), candidate_pool.size(3)
             )
             top_paths = candidate_pool.gather(1, gather_index)
+            top_ltc_costs = ltc_cost_pool.gather(1, top_index)
             rounds_used = round_index + 1
 
-            # A batch must be collectively good enough before stopping.  This
-            # retains the vectorized policy interface without starving harder
-            # environments of their remaining sampling rounds.
-            # Do not allow threshold-based termination before a full top-k
-            # candidate set exists. In particular, when fewer than top_k
-            # paths are sampled in the first round, its mean is not yet the
-            # requested top-k mean.
+            # A full top-k set is required before early termination. With
+            # batch_size=1 this compares precisely the requested top-k mean.
             if (
-                cost_threshold is not None
-                and top_costs.size(1) == top_k
-                and bool((top_costs.mean(dim=1) <= cost_threshold).all())
+                segment_error_threshold is not None
+                and top_segment_errors.size(1) == top_k
+                and bool(
+                    (top_segment_errors.mean(dim=1) <= segment_error_threshold).all()
+                )
             ):
                 break
 
-        assert top_paths is not None and top_costs is not None
-        top_actions = self.decode_actions(top_paths)
-        rollout_final = self.rollout_final_latent(
-            z_start, top_actions, history_size=history_size
+        assert (
+            top_paths is not None
+            and top_segment_errors is not None
+            and top_ltc_costs is not None
         )
-        rollout_goal_costs = F.mse_loss(
-            rollout_final,
-            z_goal[:, None].expand_as(rollout_final),
-            reduction="none",
-        ).mean(dim=-1)
-        best = rollout_goal_costs.argmin(dim=1)
+        top_actions = self.decode_actions(top_paths)
+        best = top_segment_errors.argmin(dim=1)
         batch_index = torch.arange(batch_size, device=self.device)
         return {
             "actions": top_actions[batch_index, best].detach().cpu(),
-            "costs": rollout_goal_costs[batch_index, best].detach().cpu(),
-            "goal_costs": rollout_goal_costs.detach().cpu(),
-            "experience_top_costs": top_costs.detach().cpu(),
+            "costs": top_segment_errors[batch_index, best].detach().cpu(),
+            # Retained under the historical name for caller compatibility.
+            # These are mean nominal segment defects, not terminal errors.
+            "goal_costs": top_segment_errors.detach().cpu(),
+            "lewm_segment_errors": top_segment_errors.detach().cpu(),
+            # Diagnostic only: these costs still condition the flow memory but
+            # do not decide which candidate enters Top-k or is executed.
+            "experience_top_costs": top_ltc_costs.detach().cpu(),
             "rounds_used": torch.full(
                 (batch_size,), rounds_used, device=self.device, dtype=torch.long
             ).cpu(),
@@ -702,6 +716,45 @@ class LatentPlannerRuntime(nn.Module):
             z_next.reshape(-1, z_next.size(-1)),
         )
         return flat_actions.reshape(*z_t.shape[:-1], -1)
+
+    @torch.no_grad()
+    def nominal_segment_rollout_error(
+        self,
+        paths: torch.Tensor,
+        actions: torch.Tensor,
+        history_size: int = 3,
+    ) -> torch.Tensor:
+        """Mean independent LeWM defect for every path transition.
+
+        Each LeWM call receives the planner's original latent context from
+        p_(t-history+1) through p_t and the matching nominal IDM actions.
+        Consequently, an error at segment t is a local path-feasibility
+        defect, not a consequence of feeding prior LeWM predictions forward.
+        """
+        batch, candidates, horizon, action_dim = actions.shape
+        latent_dim = paths.size(-1)
+        defects = []
+        for t in range(horizon):
+            start = max(0, t - history_size + 1)
+            context_len = t - start + 1
+            latent_context = paths[:, :, start : t + 1].reshape(
+                batch * candidates, context_len, latent_dim
+            )
+            action_context = actions[:, :, start : t + 1].reshape(
+                batch * candidates, context_len, action_dim
+            )
+            prediction = self.lewm.predict(
+                latent_context,
+                self.lewm.action_encoder(action_context),
+            )[:, -1]
+            target = paths[:, :, t + 1].reshape(batch * candidates, latent_dim)
+            defects.append(
+                (prediction - target).square().mean(dim=-1).reshape(
+                    batch, candidates
+                )
+            )
+        self.rollout_count += batch * candidates
+        return torch.stack(defects, dim=-1).mean(dim=-1)
 
     @torch.no_grad()
     def rollout_final_latent(
@@ -908,7 +961,7 @@ class ExperienceGuidedLatentPathSolver(LearnedLatentPathSolver):
         experience_max_size: int = 64,
         min_experience_size: int = 0,
         top_k: int = 8,
-        cost_threshold: float | None = 1.0,
+        segment_error_threshold: float | None = None,
         ltc_checkpoint: str | Path | None = None,
         **kwargs: Any,
     ):
@@ -940,7 +993,7 @@ class ExperienceGuidedLatentPathSolver(LearnedLatentPathSolver):
         self.experience_max_size = experience_max_size
         self.min_experience_size = min_experience_size
         self.top_k = top_k
-        self.cost_threshold = cost_threshold
+        self.segment_error_threshold = segment_error_threshold
 
     @torch.inference_mode()
     def solve(self, info_dict: dict, init_action: torch.Tensor | None = None) -> dict:
@@ -961,7 +1014,7 @@ class ExperienceGuidedLatentPathSolver(LearnedLatentPathSolver):
                 experience_max_size=self.experience_max_size,
                 min_experience_size=self.min_experience_size,
                 top_k=self.top_k,
-                cost_threshold=self.cost_threshold,
+                segment_error_threshold=self.segment_error_threshold,
                 flow_steps=self.flow_steps,
                 history_size=self.history_size,
                 generator=self.torch_gen,
