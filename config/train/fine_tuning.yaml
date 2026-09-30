@@ -21,7 +21,7 @@ lewm_history_size: 3
 
 wandb:
   enabled: true
-  project: lewm-latent-planner-finetune
+  project: leflow-dev
   entity: null
   name: fine_tuned_latent_planner_h10
   id: null

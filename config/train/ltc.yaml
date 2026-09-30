@@ -57,7 +57,7 @@ episode_split:
 
 wandb:
   enabled: True
-  project: lewm-latent-trajectory-cost
+  project: leflow-dev
   entity: null
   name: ${output_model_name}_h${trajectory.horizon}
   id: null
