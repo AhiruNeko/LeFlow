@@ -19,6 +19,7 @@ from omegaconf import DictConfig, OmegaConf
 
 from latent_planner import load_lewm, stablewm_cache_dir
 from latent_trajectory_cost import TrajectoryCostModel, TrajectoryEncoder
+from module import SIGReg
 from train_latent_planner import (
     encode_latents,
     freeze,
@@ -87,6 +88,7 @@ def step_batch(
     lewm: torch.nn.Module,
     trajectory_encoder: TrajectoryEncoder,
     cost_model: TrajectoryCostModel,
+    sigreg: SIGReg | None,
     cfg: DictConfig,
     device: torch.device,
 ) -> dict[str, torch.Tensor]:
@@ -94,12 +96,12 @@ def step_batch(
     positive_path = encode_latents(lewm, batch, device)
     positive_goal = positive_path[:, -1]
 
-    _, positive_cost = ltc_outputs(
+    positive_representation, positive_cost = ltc_outputs(
         trajectory_encoder, cost_model, positive_path, positive_goal
     )
 
     mismatch_goal = mismatched_goals(positive_goal)
-    _, mismatch_cost = ltc_outputs(
+    mismatch_representation, mismatch_cost = ltc_outputs(
         trajectory_encoder, cost_model, positive_path, mismatch_goal
     )
     goal_mismatch_loss = preference_loss(
@@ -109,19 +111,38 @@ def step_batch(
     noisy_negative_path = noised_path(
         positive_path, float(cfg.negatives.noise_std)
     )
-    _, noisy_cost = ltc_outputs(
+    noisy_representation, noisy_cost = ltc_outputs(
         trajectory_encoder, cost_model, noisy_negative_path, positive_goal
     )
     noise_loss = preference_loss(positive_cost, noisy_cost, float(cfg.preference.beta))
 
+    # SIGReg regularizes the encoder representation rather than the scalar
+    # cost. The trajectory type is the time axis and batch samples are the
+    # independent examples expected by SIGReg: [T=3, B, D].
+    sigreg_loss = (
+        positive_cost.new_zeros(())
+        if sigreg is None
+        else sigreg(
+            torch.stack(
+                (
+                    positive_representation,
+                    mismatch_representation,
+                    noisy_representation,
+                ),
+                dim=0,
+            )
+        )
+    )
     total = (
         float(cfg.negatives.goal_mismatch_weight) * goal_mismatch_loss
         + float(cfg.negatives.noise_weight) * noise_loss
+        + float(cfg.loss.sigreg.weight) * sigreg_loss
     )
     return {
         "loss": total,
         "goal_mismatch_loss": goal_mismatch_loss.detach(),
         "noise_loss": noise_loss.detach(),
+        "sigreg_loss": sigreg_loss.detach(),
         "positive_cost": positive_cost.detach().mean(),
         "mismatch_cost": mismatch_cost.detach().mean(),
         "noisy_cost": noisy_cost.detach().mean(),
@@ -150,6 +171,7 @@ def validate(
             lewm=lewm,
             trajectory_encoder=trajectory_encoder,
             cost_model=cost_model,
+            sigreg=None,
             cfg=cfg,
             device=device,
         )
@@ -253,6 +275,11 @@ def run(cfg: DictConfig) -> None:
         cost_model.parameters()
     )
     optimizer = torch.optim.AdamW(trainable_parameters, **cfg.optimizer)
+    sigreg = (
+        SIGReg(**cfg.loss.sigreg.kwargs).to(device)
+        if float(cfg.loss.sigreg.weight) > 0
+        else None
+    )
 
     run_dir = Path(stablewm_cache_dir(sub_folder="checkpoints"), cfg.subdir)
     run_dir.mkdir(parents=True, exist_ok=True)
@@ -271,6 +298,7 @@ def run(cfg: DictConfig) -> None:
                     lewm=lewm,
                     trajectory_encoder=trajectory_encoder,
                     cost_model=cost_model,
+                    sigreg=sigreg,
                     cfg=cfg,
                     device=device,
                 )

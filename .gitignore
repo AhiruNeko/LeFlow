@@ -16,3 +16,4 @@ eval_results/
 logs/
 analysis/experience_sampling/
 analysis/latent_trajectory_cost/
+backups/

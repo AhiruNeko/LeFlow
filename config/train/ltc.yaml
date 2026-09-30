@@ -34,6 +34,15 @@ preference:
   # L = softplus(-(c_negative - c_positive) / beta)
   beta: 0.1
 
+loss:
+  # Applied to encoder representations of positive, goal-mismatched, and
+  # noised paths. The raw SIGReg statistic is logged separately.
+  sigreg:
+    weight: 1.0e-4
+    kwargs:
+      knots: 17
+      num_proj: 1024
+
 negatives:
   goal_mismatch_weight: 1.0
   noise_weight: 1.0
