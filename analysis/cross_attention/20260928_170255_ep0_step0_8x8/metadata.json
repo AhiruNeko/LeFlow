@@ -1,0 +1,30 @@
+{
+  "planner_checkpoint": "/root/projects/pusht/latent_planner_finetune/pusht_h10_phase2/fine_tuned_latent_planner_step_6000.pt",
+  "dataset_name": "pusht_expert_train",
+  "cache_dir": null,
+  "episode_index": 0,
+  "start_step": 0,
+  "goal_offset_steps": 50,
+  "horizon": 10,
+  "action_block": 5,
+  "flow_steps": 16,
+  "candidates": 8,
+  "rounds": 8,
+  "max_memory_size": 64,
+  "noise_seed": 2026,
+  "img_size": 224,
+  "device": "cuda",
+  "output_dir": "analysis/cross_attention",
+  "attention_weight_definition": "Mean over candidates, heads, and query tokens. Each layer/ODE-step sums to one over all FIFO experiences.",
+  "cost_attention_pearson": 0.2791336520804683,
+  "traced_rounds": [
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7
+  ],
+  "summary_entry_count": 224
+}

@@ -1,0 +1,12 @@
+{
+  "planner_interior_mse": 0.07806599486619234,
+  "planner_first_interior_mse": 0.0646078012138605,
+  "idm_expert_sim_success": 0.96,
+  "lewm_expert_action_terminal_mse": 0.199076183475554,
+  "lewm_expert_action_latent_success": 0.54,
+  "expert_path_idm_lewm_terminal_mse": 0.20242069374769925,
+  "expert_path_idm_lewm_latent_success": 0.6,
+  "planner_idm_sim_success": 0.74
+}
+
+Simulator panels are true PushT rollouts. Planner and LeWM panels are nearest-reference-frame latent projections because this model has no latent-to-image decoder.

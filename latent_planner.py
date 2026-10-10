@@ -531,19 +531,21 @@ class LatentPlannerRuntime(nn.Module):
         cost_threshold: float | None,
         flow_steps: int,
         history_size: int = 3,
+        segment_decay: float = 0.9,
         generator: torch.Generator | None = None,
     ) -> dict[str, torch.Tensor]:
         """Generate candidate paths over multiple FIFO-memory flow rounds.
 
-        LTC costs choose a small candidate set only.  The final action plan is
-        selected independently by the original LeFlow inverse-dynamics + LeWM
-        rollout-to-goal score, so an LTC calibration error cannot directly
-        become the executed action.
+        LTC costs choose the candidate set only. Final selection independently
+        verifies each IDM--LeWM transition from its planner-proposed source
+        state, preventing recurrent long-rollout drift from dominating the rank.
         """
         if samples_per_round < 1 or rounds < 1:
             raise ValueError("samples_per_round and rounds must both be positive")
         if experience_max_size < 0 or top_k < 1:
             raise ValueError("experience_max_size must be >= 0 and top_k must be positive")
+        if not 0.0 < segment_decay <= 1.0:
+            raise ValueError("segment_decay must be in (0, 1]")
         if trajectory_encoder.representation_dim != self.flow.path_feature_dim:
             raise ValueError(
                 "LTC representation_dim must equal the flow path_feature_dim"
@@ -627,25 +629,53 @@ class LatentPlannerRuntime(nn.Module):
 
         assert top_paths is not None and top_costs is not None
         top_actions = self.decode_actions(top_paths)
-        rollout_final = self.rollout_final_latent(
-            z_start, top_actions, history_size=history_size
+        segment_costs, segment_errors = self.segmented_lewm_cost(
+            top_paths, top_actions, segment_decay=segment_decay
         )
-        rollout_goal_costs = F.mse_loss(
-            rollout_final,
-            z_goal[:, None].expand_as(rollout_final),
-            reduction="none",
-        ).mean(dim=-1)
-        best = rollout_goal_costs.argmin(dim=1)
+        best = segment_costs.argmin(dim=1)
         batch_index = torch.arange(batch_size, device=self.device)
         return {
             "actions": top_actions[batch_index, best].detach().cpu(),
-            "costs": rollout_goal_costs[batch_index, best].detach().cpu(),
-            "goal_costs": rollout_goal_costs.detach().cpu(),
+            "costs": segment_costs[batch_index, best].detach().cpu(),
+            # Historical compatibility: this is now a weighted segment score,
+            # not a recurrent LeWM rollout-to-goal distance.
+            "goal_costs": segment_costs.detach().cpu(),
+            "segment_costs": segment_costs.detach().cpu(),
+            "segment_errors": segment_errors.detach().cpu(),
             "experience_top_costs": top_costs.detach().cpu(),
             "rounds_used": torch.full(
                 (batch_size,), rounds_used, device=self.device, dtype=torch.long
             ).cpu(),
         }
+
+    @torch.no_grad()
+    def segmented_lewm_cost(
+        self,
+        paths: torch.Tensor,
+        actions: torch.Tensor,
+        *,
+        segment_decay: float,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """Score each IDM--LeWM transition from the planner's original z_t."""
+        batch, candidates, horizon = actions.shape[:3]
+        latent_dim = paths.size(-1)
+        flat_states = paths[:, :, :-1].reshape(batch * candidates * horizon, 1, latent_dim)
+        flat_actions = actions.reshape(batch * candidates * horizon, 1, actions.size(-1))
+        prediction = self.lewm.predict(
+            flat_states, self.lewm.action_encoder(flat_actions)
+        )[:, -1]
+        targets = paths[:, :, 1:].reshape(batch * candidates * horizon, latent_dim)
+        segment_errors = (prediction - targets).square().mean(dim=-1).reshape(
+            batch, candidates, horizon
+        )
+        powers = torch.arange(horizon, device=paths.device, dtype=paths.dtype)
+        weights = torch.pow(
+            torch.as_tensor(segment_decay, device=paths.device, dtype=paths.dtype), powers
+        )
+        weights = weights / weights.sum()
+        weighted_cost = (segment_errors * weights[None, None]).sum(dim=-1)
+        self.rollout_count += batch * candidates * horizon
+        return weighted_cost, segment_errors
 
     def decode_actions(self, paths: torch.Tensor) -> torch.Tensor:
         z_t = paths[..., :-1, :]
@@ -861,6 +891,7 @@ class ExperienceGuidedLatentPathSolver(LearnedLatentPathSolver):
         experience_max_size: int = 64,
         top_k: int = 8,
         cost_threshold: float | None = 1.0,
+        segment_decay: float = 0.9,
         trajectory_encoder_checkpoint: str | Path | None = None,
         cost_model_checkpoint: str | Path | None = None,
         **kwargs: Any,
@@ -868,6 +899,8 @@ class ExperienceGuidedLatentPathSolver(LearnedLatentPathSolver):
         super().__init__(num_samples=samples_per_round, **kwargs)
         if rounds < 1:
             raise ValueError("rounds must be positive")
+        if not 0.0 < segment_decay <= 1.0:
+            raise ValueError("segment_decay must be in (0, 1]")
         payload = torch.load(
             _resolve_checkpoint(self.checkpoint), map_location="cpu", weights_only=False
         )
@@ -897,6 +930,7 @@ class ExperienceGuidedLatentPathSolver(LearnedLatentPathSolver):
         self.experience_max_size = experience_max_size
         self.top_k = top_k
         self.cost_threshold = cost_threshold
+        self.segment_decay = segment_decay
 
     @torch.inference_mode()
     def solve(self, info_dict: dict, init_action: torch.Tensor | None = None) -> dict:
@@ -919,6 +953,7 @@ class ExperienceGuidedLatentPathSolver(LearnedLatentPathSolver):
                 cost_threshold=self.cost_threshold,
                 flow_steps=self.flow_steps,
                 history_size=self.history_size,
+                segment_decay=self.segment_decay,
                 generator=self.torch_gen,
             )
             all_actions.append(out["actions"])

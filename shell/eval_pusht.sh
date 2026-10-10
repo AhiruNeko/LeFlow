@@ -16,7 +16,7 @@ export STABLEWM_HOME=/root/projects/pusht
 export HYDRA_FULL_ERROR=1
 
 # Phase-two fine-tuned planner and jointly fine-tuned LTC components.
-PLANNER_DIR="${STABLEWM_HOME}/latent_planner_finetune/pusht_h10_phase2"
+PLANNER_DIR="${STABLEWM_HOME}/latent_planner_finetune/pusht_h10_phase2_v1"
 PLANNER_CHECKPOINT="${PLANNER_DIR}/fine_tuned_latent_planner.pt"
 TRAJECTORY_ENCODER_CHECKPOINT="${PLANNER_DIR}/fine_tuned_latent_planner_trajectory_encoder.pt"
 COST_MODEL_CHECKPOINT="${PLANNER_DIR}/fine_tuned_latent_planner_cost_model.pt"
@@ -42,8 +42,11 @@ conda run -n lewm --no-capture-output python eval.py --config-name=pusht.yaml \
   plan_config.action_block=5 \
   solver.trajectory_encoder_checkpoint="${TRAJECTORY_ENCODER_CHECKPOINT}" \
   solver.cost_model_checkpoint="${COST_MODEL_CHECKPOINT}" \
+  solver.segment_decay=0.9 \
   eval.num_eval=50 \
-  output.filename="${RESULT_FILE}"
+  output.filename="${RESULT_FILE}" \
+  eval.eval_budget=100 \
+  eval.goal_offset_steps=50
 
 # eval.py emits its text and rollout videos beside the policy checkpoint.
 # Archive only this run's uniquely named text file and its rollout artifacts;

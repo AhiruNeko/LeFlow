@@ -5,10 +5,12 @@ flow_steps: 16
 rounds: 2
 samples_per_round: 32
 experience_max_size: 64
-top_k: 8
-# LTC costs are used only to retrieve top-k candidates.  The final action is
-# always chosen by inverse dynamics + LeWM rollout goal distance.
+top_k: 64
+# LTC costs retrieve the top-k candidates. Final selection uses independent
+# IDM--LeWM segment errors, weighted toward earlier segments.
 cost_threshold: 0
+# Weight at segment t is proportional to segment_decay**t; 1.0 is uniform.
+segment_decay: 0.9
 # null loads the LTC component paths recorded in the planner checkpoint.
 trajectory_encoder_checkpoint: null
 cost_model_checkpoint: null

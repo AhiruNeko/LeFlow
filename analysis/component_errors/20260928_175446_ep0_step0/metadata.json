@@ -1,0 +1,18 @@
+{
+  "planner_checkpoint": "/root/projects/pusht/latent_planner_finetune/pusht_h10_phase2/fine_tuned_latent_planner_step_6000.pt",
+  "dataset_name": "pusht_expert_train",
+  "cache_dir": null,
+  "episode_index": 0,
+  "start_step": 0,
+  "goal_offset_steps": 50,
+  "horizon": 10,
+  "action_block": 5,
+  "planner_samples": 64,
+  "flow_steps": 16,
+  "history_size": 3,
+  "noise_seed": 20260928,
+  "img_size": 224,
+  "device": "cuda",
+  "output_dir": "analysis/component_errors",
+  "action_normalization": "dataset-wide finite-action z-score, identical to train_latent_planner.py"
+}

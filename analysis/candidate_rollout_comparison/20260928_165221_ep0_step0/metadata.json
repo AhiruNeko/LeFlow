@@ -1,0 +1,41 @@
+{
+  "planner_checkpoint": "/root/projects/pusht/latent_planner_finetune/pusht_h10_phase2/fine_tuned_latent_planner_step_6000.pt",
+  "dataset_name": "pusht_expert_train",
+  "cache_dir": null,
+  "episode_index": 0,
+  "start_step": 0,
+  "goal_offset_steps": 50,
+  "horizon": 10,
+  "action_block": 5,
+  "flow_steps": 16,
+  "history_size": 3,
+  "max_paths": 64,
+  "schedules": [
+    "64x1",
+    "32x2",
+    "16x4",
+    "8x8",
+    "4x16"
+  ],
+  "noise_seed": 2026,
+  "seed": 42,
+  "img_size": 224,
+  "device": "cuda",
+  "output_dir": "analysis/candidate_rollout_comparison",
+  "fixed_noise_shape": [
+    1,
+    64,
+    9,
+    192
+  ],
+  "simulation_seed": null,
+  "simulation_goal_state": [
+    83.1924819946289,
+    313.5968933105469,
+    192.53692626953125,
+    335.4407653808594,
+    1.498478889465332,
+    -1.4850521087646484,
+    52.560935974121094
+  ]
+}
