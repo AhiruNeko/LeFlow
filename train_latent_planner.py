@@ -9,13 +9,11 @@ import torch
 from omegaconf import DictConfig, OmegaConf, open_dict
 
 from latent_planner import (
-    InverseDynamics,
     LatentPathFlow,
     checkpoint_payload,
-    flow_matching_loss,
-    inverse_dynamics_loss,
+    joint_flow_matching_loss,
     lewm_consistency_loss,
-    load_lewm,
+    load_world_model,
     smoothness_loss,
     stablewm_cache_dir,
 )
@@ -163,19 +161,18 @@ def step_batch(
     batch: dict,
     lewm: torch.nn.Module,
     flow: LatentPathFlow,
-    inverse_dynamics: InverseDynamics,
     cfg: DictConfig,
     device: torch.device,
 ) -> dict[str, torch.Tensor]:
     batch["action"] = torch.nan_to_num(batch["action"].to(device), 0.0)
     z_path = encode_latents(lewm, batch, device)
     actions = batch["action"][:, : cfg.planner.horizon]
-
-    loss_flow = flow_matching_loss(flow, z_path)
-    loss_inv, pred_actions = inverse_dynamics_loss(inverse_dynamics, z_path, actions)
+    loss_flow, loss_action, pred_actions = joint_flow_matching_loss(
+        flow, z_path, actions
+    )
 
     if cfg.loss.consistency.weight:
-        if cfg.loss.consistency.detach_inverse:
+        if cfg.loss.consistency.detach_actions:
             with torch.no_grad():
                 loss_dyn = lewm_consistency_loss(
                     lewm,
@@ -195,14 +192,14 @@ def step_batch(
     loss_smooth = smoothness_loss(z_path)
     total = (
         cfg.loss.flow.weight * loss_flow
-        + cfg.loss.inverse.weight * loss_inv
+        + cfg.loss.action.weight * loss_action
         + cfg.loss.consistency.weight * loss_dyn
         + cfg.loss.smoothness.weight * loss_smooth
     )
     return {
         "loss": total,
         "flow_loss": loss_flow.detach(),
-        "inverse_loss": loss_inv.detach(),
+        "action_loss": loss_action.detach(),
         "consistency_loss": loss_dyn.detach(),
         "smoothness_loss": loss_smooth.detach(),
     }
@@ -214,12 +211,10 @@ def validate(
     loader,
     lewm: torch.nn.Module,
     flow: LatentPathFlow,
-    inverse_dynamics: InverseDynamics,
     cfg: DictConfig,
     device: torch.device,
 ) -> dict[str, float]:
     flow.eval()
-    inverse_dynamics.eval()
     sums: dict[str, float] = {}
     count = 0
     for i, batch in enumerate(loader):
@@ -227,7 +222,6 @@ def validate(
             batch=batch,
             lewm=lewm,
             flow=flow,
-            inverse_dynamics=inverse_dynamics,
             cfg=cfg,
             device=device,
         )
@@ -238,7 +232,6 @@ def validate(
         if cfg.val_batches is not None and i + 1 >= cfg.val_batches:
             break
     flow.train()
-    inverse_dynamics.train()
     return {k: v / max(count, 1) for k, v in sums.items()}
 
 
@@ -248,7 +241,13 @@ def run(cfg: DictConfig):
     device = torch.device(cfg.device if torch.cuda.is_available() else "cpu")
 
     train_loader, val_loader = make_loaders(cfg)
-    lewm = freeze(load_lewm(cfg.lewm_checkpoint).to(device))
+    lewm = freeze(
+        load_world_model(
+            cfg.lewm_checkpoint,
+            world_model_type=cfg.world_model.type,
+            fast_source_dir=cfg.world_model.fast_source_dir,
+        ).to(device)
+    )
 
     first_batch = next(iter(train_loader))
     z = encode_latents(lewm, first_batch, device)
@@ -257,19 +256,12 @@ def run(cfg: DictConfig):
 
     flow = LatentPathFlow(
         latent_dim=latent_dim,
+        action_dim=action_dim,
         max_horizon=cfg.planner.max_horizon,
         **cfg.flow,
     ).to(device)
-    inverse_dynamics = InverseDynamics(
-        latent_dim=latent_dim,
-        action_dim=action_dim,
-        **cfg.inverse_dynamics,
-    ).to(device)
 
-    optimizer = torch.optim.AdamW(
-        list(flow.parameters()) + list(inverse_dynamics.parameters()),
-        **cfg.optimizer,
-    )
+    optimizer = torch.optim.AdamW(flow.parameters(), **cfg.optimizer)
 
     run_dir = Path(stablewm_cache_dir(sub_folder="checkpoints"), cfg.subdir)
     run_dir.mkdir(parents=True, exist_ok=True)
@@ -281,13 +273,11 @@ def run(cfg: DictConfig):
         for epoch in range(cfg.epochs):
             print(f"epoch={epoch + 1} train_start", flush=True)
             flow.train()
-            inverse_dynamics.train()
             for batch_idx, batch in enumerate(train_loader):
                 out = step_batch(
                     batch=batch,
                     lewm=lewm,
                     flow=flow,
-                    inverse_dynamics=inverse_dynamics,
                     cfg=cfg,
                     device=device,
                 )
@@ -296,7 +286,7 @@ def run(cfg: DictConfig):
                 grad_norm = None
                 if cfg.grad_clip_norm is not None:
                     grad_norm = torch.nn.utils.clip_grad_norm_(
-                        list(flow.parameters()) + list(inverse_dynamics.parameters()),
+                        flow.parameters(),
                         cfg.grad_clip_norm,
                     )
                 optimizer.step()
@@ -327,7 +317,6 @@ def run(cfg: DictConfig):
                 loader=val_loader,
                 lewm=lewm,
                 flow=flow,
-                inverse_dynamics=inverse_dynamics,
                 cfg=cfg,
                 device=device,
             )
@@ -345,9 +334,15 @@ def run(cfg: DictConfig):
 
             payload = checkpoint_payload(
                 lewm_checkpoint=str(cfg.lewm_checkpoint),
+                world_model_type=str(cfg.world_model.type),
+                fast_source_dir=(
+                    str(cfg.world_model.fast_source_dir)
+                    if cfg.world_model.fast_source_dir is not None
+                    else None
+                ),
                 action_block=cfg.planner.action_block,
                 flow=flow,
-                inverse_dynamics=inverse_dynamics,
+                inverse_dynamics=None,
                 cfg=OmegaConf.to_container(cfg, resolve=True),
             )
             epoch_path = run_dir / f"{cfg.output_model_name}_epoch_{epoch + 1}.pt"

@@ -9,8 +9,13 @@ exec > >(tee "$LOG_FILE") 2>&1
 export STABLEWM_HOME=/root/autodl-tmp/pusht
 export HYDRA_FULL_ERROR=1
 
+# Override these environment variables to train against Fast-LeWM.
+WORLD_MODEL_TYPE="${WORLD_MODEL_TYPE:-lewm}"
+WORLD_MODEL_CHECKPOINT="${WORLD_MODEL_CHECKPOINT:-pusht/lewm}"
+
 conda run -n lewm --no-capture-output python train_latent_planner.py \
-  lewm_checkpoint=pusht/lewm \
+  lewm_checkpoint="$WORLD_MODEL_CHECKPOINT" \
+  world_model.type="$WORLD_MODEL_TYPE" \
   data.dataset.name=pusht_expert_train \
   data.dataset.keys_to_load='[pixels,action,proprio,state]' \
   data.dataset.keys_to_cache='[action,proprio,state]' \
@@ -19,4 +24,4 @@ conda run -n lewm --no-capture-output python train_latent_planner.py \
   planner.action_block=5 \
   epochs=10 \
   loader.batch_size=128 \
-  subdir=latent_planner/pusht_h5_ep10
+  subdir=joint_latent_planner/pusht_h10_ep10

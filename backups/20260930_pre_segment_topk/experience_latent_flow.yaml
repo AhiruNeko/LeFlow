@@ -1,0 +1,19 @@
+_target_: latent_planner.ExperienceGuidedLatentPathSolver
+checkpoint: ${policy}
+batch_size: 1
+flow_steps: 16
+rounds: 8
+samples_per_round: 8
+experience_max_size: 64
+# Before each guided planning round, bootstrap no-memory paths until FIFO has
+# at least this many entries. Set to 0 to disable bootstrap.
+min_experience_size: 0
+top_k: 64
+# LTC costs retain the top-k candidates. IDM + LeWM then chooses the
+# candidate with the smallest mean independent nominal-subgoal defect.
+cost_threshold: -0.3
+# null loads the combined LTC checkpoint recorded in the planner checkpoint.
+ltc_checkpoint: null
+device: "cuda"
+seed: ${seed}
+history_size: 3

@@ -5,6 +5,9 @@ from pathlib import Path
 from typing import Any
 
 import gymnasium as gym
+import importlib.util
+import sys
+
 import numpy as np
 import torch
 from gymnasium.spaces import Box
@@ -90,6 +93,75 @@ def load_lewm(lewm_checkpoint: str | Path) -> nn.Module:
             state_dict = module.get("state_dict", module)
             return _build_lewm_from_state_dict(state_dict).eval()
         raise
+
+
+def _load_module_from_path(name: str, path: Path):
+    spec = importlib.util.spec_from_file_location(name, path)
+    if spec is None or spec.loader is None:
+        raise ImportError(f"Could not import {name} from {path}")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+def load_fast_lewm(
+    checkpoint: str | Path,
+    source_dir: str | Path | None = None,
+) -> nn.Module:
+    """Load a Fast-LeWM serialized object without polluting LeWM imports."""
+    path = Path(checkpoint)
+    if not path.exists():
+        raise FileNotFoundError(f"Fast-LeWM checkpoint not found: {checkpoint}")
+    source_root = Path(source_dir) if source_dir else Path(__file__).parent / "third_party" / "fast_lewm_runtime"
+    if not source_root.is_absolute() and not source_root.exists():
+        source_root = Path(__file__).parent / source_root
+    module_path = source_root / "module.py"
+    jepa_path = source_root / "jepa.py"
+    if not module_path.exists() or not jepa_path.exists():
+        raise FileNotFoundError(
+            "Fast-LeWM source is required to load its serialized checkpoint. "
+            f"Expected module.py and jepa.py under {source_root}."
+        )
+
+    # The Fast checkpoint was pickled with top-level module names module
+    # and jepa. Temporarily bind those names to Fast's implementation so
+    # they cannot resolve to this repository's original-LeWM files.
+    previous = {name: sys.modules.get(name) for name in ("module", "jepa")}
+    try:
+        _load_module_from_path("module", module_path)
+        _load_module_from_path("jepa", jepa_path)
+        model = torch.load(path, map_location="cpu", weights_only=False)
+    finally:
+        for name, old_module in previous.items():
+            if old_module is None:
+                sys.modules.pop(name, None)
+            else:
+                sys.modules[name] = old_module
+    if not isinstance(model, nn.Module):
+        raise TypeError(f"Fast-LeWM checkpoint did not contain an nn.Module: {type(model)}")
+    model.eval()
+    model.requires_grad_(False)
+    model.is_fast_lewm = True
+    return model
+
+
+def load_world_model(
+    checkpoint: str | Path,
+    *,
+    world_model_type: str = "lewm",
+    fast_source_dir: str | Path | None = None,
+) -> nn.Module:
+    kind = world_model_type.lower().replace("_", "-")
+    if kind in {"lewm", "original", "original-lewm"}:
+        model = load_lewm(checkpoint)
+        model.is_fast_lewm = False
+        return model
+    if kind in {"fast", "fast-lewm", "fastlewm"}:
+        return load_fast_lewm(checkpoint, source_dir=fast_source_dir)
+    raise ValueError(
+        f"Unknown world_model_type={world_model_type!r}; expected 'lewm' or 'fast-lewm'."
+    )
 
 
 def _build_lewm_from_state_dict(state_dict: dict[str, torch.Tensor]) -> nn.Module:
@@ -198,7 +270,16 @@ class SinusoidalTimeEmbedding(nn.Module):
 
 
 class LatentPathFlow(nn.Module):
-    """Rectified-flow velocity model for latent path interiors."""
+    """Joint rectified-flow model for latent-path interiors and action blocks.
+
+    A path token and an action token share a transition index: the action token
+    realizes the transition from the preceding latent state to that path token.
+    The model therefore denoises a route and its action realization together,
+    rather than decoding each transition afterwards with an independent MLP.
+
+    action_dim=None retains the original path-only behavior. It is used
+    only to load and evaluate pre-joint-flow checkpoints.
+    """
 
     def __init__(
         self,
@@ -208,6 +289,7 @@ class LatentPathFlow(nn.Module):
         max_horizon: int = 20,
         time_dim: int = 64,
         dropout: float = 0.0,
+        action_dim: int | None = None,
     ):
         super().__init__()
         self.latent_dim = latent_dim
@@ -216,10 +298,21 @@ class LatentPathFlow(nn.Module):
         self.depth = depth
         self.time_dim = time_dim
         self.dropout = dropout
+        self.action_dim = action_dim
         self.pos_embedding = nn.Parameter(
             torch.randn(1, max_horizon - 1, hidden_dim) * 0.02
         )
+        self.action_pos_embedding = (
+            nn.Parameter(torch.randn(1, max_horizon, hidden_dim) * 0.02)
+            if action_dim is not None
+            else None
+        )
         self.token_proj = nn.Linear(latent_dim, hidden_dim)
+        self.action_token_proj = (
+            nn.Linear(action_dim, hidden_dim) if action_dim is not None else None
+        )
+        self.path_type_embedding = nn.Parameter(torch.zeros(1, 1, hidden_dim))
+        self.action_type_embedding = nn.Parameter(torch.zeros(1, 1, hidden_dim))
         self.start_proj = nn.Linear(latent_dim, hidden_dim)
         self.goal_proj = nn.Linear(latent_dim, hidden_dim)
         self.time_embed = nn.Sequential(
@@ -239,6 +332,11 @@ class LatentPathFlow(nn.Module):
         )
         self.net = nn.TransformerEncoder(enc_layer, num_layers=depth)
         self.out = nn.Sequential(nn.LayerNorm(hidden_dim), nn.Linear(hidden_dim, latent_dim))
+        self.action_out = (
+            nn.Sequential(nn.LayerNorm(hidden_dim), nn.Linear(hidden_dim, action_dim))
+            if action_dim is not None
+            else None
+        )
 
     def forward(
         self,
@@ -246,7 +344,8 @@ class LatentPathFlow(nn.Module):
         t: torch.Tensor,
         z_start: torch.Tensor,
         z_goal: torch.Tensor,
-    ) -> torch.Tensor:
+        action_x_t: torch.Tensor | None = None,
+    ) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
         n_tokens = x_t.size(1)
         if n_tokens > self.max_horizon - 1:
             raise ValueError(
@@ -257,9 +356,45 @@ class LatentPathFlow(nn.Module):
             + self.goal_proj(z_goal)
             + self.time_embed(t.float())
         )
-        x = self.token_proj(x_t)
-        x = x + self.pos_embedding[:, :n_tokens] + cond[:, None]
-        return self.out(self.net(x))
+        path_tokens = self.token_proj(x_t)
+        path_tokens = (
+            path_tokens
+            + self.pos_embedding[:, :n_tokens]
+            + self.path_type_embedding
+            + cond[:, None]
+        )
+        if action_x_t is None:
+            return self.out(self.net(path_tokens))
+
+        if self.action_dim is None or self.action_token_proj is None:
+            raise ValueError(
+                "action_x_t was supplied to a path-only LatentPathFlow. "
+                "Construct it with action_dim to use the joint model."
+            )
+        if action_x_t.ndim != 3 or action_x_t.size(-1) != self.action_dim:
+            raise ValueError(
+                f"Expected action_x_t [B, H, {self.action_dim}], got "
+                f"{tuple(action_x_t.shape)}."
+            )
+        if action_x_t.size(1) != n_tokens + 1:
+            raise ValueError(
+                "Joint flow requires one action block for every full path "
+                f"transition, got {action_x_t.size(1)} blocks for {n_tokens + 1}."
+            )
+
+        action_tokens = self.action_token_proj(action_x_t)
+        action_tokens = (
+            action_tokens
+            + self.action_pos_embedding[:, : action_x_t.size(1)]
+            + self.action_type_embedding
+            + cond[:, None]
+        )
+        # This is a route generator, not a causal world model: actions and
+        # subgoals deliberately attend to the whole route.
+        joint_tokens = self.net(torch.cat([path_tokens, action_tokens], dim=1))
+        path_hidden = joint_tokens[:, :n_tokens]
+        action_hidden = joint_tokens[:, n_tokens:]
+        return self.out(path_hidden), self.action_out(action_hidden)
 
 
 class InverseDynamics(nn.Module):
@@ -298,7 +433,7 @@ class LatentPlannerRuntime(nn.Module):
         self,
         lewm: nn.Module,
         flow: LatentPathFlow,
-        inverse_dynamics: InverseDynamics,
+        inverse_dynamics: InverseDynamics | None,
         action_block: int = 5,
     ):
         super().__init__()
@@ -324,11 +459,24 @@ class LatentPlannerRuntime(nn.Module):
             )
 
         arch = payload["arch"]
-        lewm = load_lewm(payload["lewm_checkpoint"])
+        lewm = load_world_model(
+            payload["lewm_checkpoint"],
+            world_model_type=payload.get("world_model_type", "lewm"),
+            fast_source_dir=payload.get("fast_source_dir"),
+        )
         flow = LatentPathFlow(**arch["flow"])
-        inverse_dynamics = InverseDynamics(**arch["inverse_dynamics"])
-        flow.load_state_dict(payload["flow_state_dict"])
-        inverse_dynamics.load_state_dict(payload["inverse_dynamics_state_dict"])
+        # Pre-joint-flow checkpoints lack the two zero-initialized token-type
+        # embeddings introduced above. Their original path computation remains
+        # unchanged, so allow only that legacy omission.
+        flow.load_state_dict(
+            payload["flow_state_dict"], strict=flow.action_dim is not None
+        )
+        inverse_dynamics = None
+        inverse_arch = arch.get("inverse_dynamics")
+        inverse_state = payload.get("inverse_dynamics_state_dict")
+        if inverse_arch is not None and inverse_state is not None:
+            inverse_dynamics = InverseDynamics(**inverse_arch)
+            inverse_dynamics.load_state_dict(inverse_state)
         model = cls(
             lewm=lewm,
             flow=flow,
@@ -353,6 +501,60 @@ class LatentPlannerRuntime(nn.Module):
         return z_start, z_goal
 
     @torch.no_grad()
+    def sample_trajectories(
+        self,
+        z_start: torch.Tensor,
+        z_goal: torch.Tensor,
+        *,
+        horizon: int,
+        num_samples: int,
+        flow_steps: int,
+        generator: torch.Generator | None = None,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """Generate aligned latent paths and action blocks from one ODE."""
+        b, d = z_start.shape
+        n = b * num_samples
+        z0 = z_start[:, None].expand(b, num_samples, d).reshape(n, d)
+        zg = z_goal[:, None].expand(b, num_samples, d).reshape(n, d)
+        path_x = torch.randn(
+            n,
+            horizon - 1,
+            d,
+            device=z_start.device,
+            dtype=z_start.dtype,
+            generator=generator,
+        )
+
+        if self.flow.action_dim is None:
+            dt = 1.0 / max(flow_steps, 1)
+            for i in range(flow_steps):
+                t = torch.full((n,), i * dt, device=z_start.device, dtype=z_start.dtype)
+                path_x = path_x + self.flow(path_x, t, z0, zg) * dt
+            paths = torch.cat([z0[:, None], path_x, zg[:, None]], dim=1)
+            paths = paths.reshape(b, num_samples, horizon + 1, d)
+            return paths, self.decode_actions(paths)
+
+        action_x = torch.randn(
+            n,
+            horizon,
+            self.flow.action_dim,
+            device=z_start.device,
+            dtype=z_start.dtype,
+            generator=generator,
+        )
+        dt = 1.0 / max(flow_steps, 1)
+        for i in range(flow_steps):
+            t = torch.full((n,), i * dt, device=z_start.device, dtype=z_start.dtype)
+            path_v, action_v = self.flow(path_x, t, z0, zg, action_x)
+            path_x = path_x + path_v * dt
+            action_x = action_x + action_v * dt
+        paths = torch.cat([z0[:, None], path_x, zg[:, None]], dim=1)
+        return (
+            paths.reshape(b, num_samples, horizon + 1, d),
+            action_x.reshape(b, num_samples, horizon, self.flow.action_dim),
+        )
+
+    @torch.no_grad()
     def sample_paths(
         self,
         z_start: torch.Tensor,
@@ -363,27 +565,22 @@ class LatentPlannerRuntime(nn.Module):
         flow_steps: int,
         generator: torch.Generator | None = None,
     ) -> torch.Tensor:
-        b, d = z_start.shape
-        n = b * num_samples
-        z0 = z_start[:, None].expand(b, num_samples, d).reshape(n, d)
-        zg = z_goal[:, None].expand(b, num_samples, d).reshape(n, d)
-        x = torch.randn(
-            n,
-            horizon - 1,
-            d,
-            device=z_start.device,
-            dtype=z_start.dtype,
+        paths, _ = self.sample_trajectories(
+            z_start,
+            z_goal,
+            horizon=horizon,
+            num_samples=num_samples,
+            flow_steps=flow_steps,
             generator=generator,
         )
-        dt = 1.0 / max(flow_steps, 1)
-        for i in range(flow_steps):
-            t = torch.full((n,), i * dt, device=z_start.device, dtype=z_start.dtype)
-            x = x + self.flow(x, t, z0, zg) * dt
-        start = z0[:, None]
-        goal = zg[:, None]
-        return torch.cat([start, x, goal], dim=1).reshape(b, num_samples, horizon + 1, d)
+        return paths
 
     def decode_actions(self, paths: torch.Tensor) -> torch.Tensor:
+        if self.inverse_dynamics is None:
+            raise RuntimeError(
+                "This joint-flow checkpoint has no standalone inverse dynamics model. "
+                "Use sample_trajectories() to obtain its generated actions."
+            )
         z_t = paths[..., :-1, :]
         z_next = paths[..., 1:, :]
         flat_actions = self.inverse_dynamics(
@@ -402,6 +599,11 @@ class LatentPlannerRuntime(nn.Module):
         b, s, h = actions.shape[:3]
         z = z_start[:, None, None].expand(b, s, 1, -1).reshape(b * s, 1, -1).clone()
         act = actions.reshape(b * s, h, -1).to(self.device)
+        if getattr(self.lewm, "is_fast_lewm", False):
+            act_emb = self.lewm.action_encoder(act, latent=z[:, :1])
+            pred = self.lewm.predict(z[:, :1], act_emb)
+            self.rollout_count += b * s
+            return pred[:, -1].reshape(b, s, -1)
         for t in range(h):
             act_hist = act[:, max(0, t - history_size + 1) : t + 1]
             emb_hist = z[:, -act_hist.size(1) :]
@@ -427,7 +629,7 @@ class LatentPlannerRuntime(nn.Module):
         generator: torch.Generator | None = None,
     ) -> dict[str, torch.Tensor]:
         z_start, z_goal = self.encode_current_and_goal(info_dict)
-        paths = self.sample_paths(
+        paths, actions = self.sample_trajectories(
             z_start,
             z_goal,
             horizon=horizon,
@@ -435,7 +637,6 @@ class LatentPlannerRuntime(nn.Module):
             flow_steps=flow_steps,
             generator=generator,
         )
-        actions = self.decode_actions(paths)
         score_mode = score_mode.lower()
         if score_mode == "rollout_goal":
             rollout_final = self.rollout_final_latent(z_start, actions, history_size)
@@ -488,6 +689,10 @@ class LatentPlannerRuntime(nn.Module):
         b, s, h = actions.shape[:3]
         z = z_start[:, None, None].expand(b, s, 1, -1).reshape(b * s, 1, -1).clone()
         act = actions.reshape(b * s, h, -1).to(self.device)
+        if getattr(self.lewm, "is_fast_lewm", False):
+            act_emb = self.lewm.action_encoder(act, latent=z[:, :1])
+            pred = self.lewm.predict(z[:, :1], act_emb)
+            return torch.cat([z, pred], dim=1).reshape(b, s, h + 1, -1)
         for t in range(h):
             act_hist = act[:, max(0, t - history_size + 1) : t + 1]
             emb_hist = z[:, -act_hist.size(1) :]
@@ -601,6 +806,50 @@ def flow_matching_loss(
     return F.mse_loss(pred_v, target - noise)
 
 
+def joint_flow_matching_loss(
+    flow: LatentPathFlow,
+    z_path: torch.Tensor,
+    actions: torch.Tensor,
+    generator: torch.Generator | None = None,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """Flow-matching losses for aligned path interiors and action blocks.
+
+    The same interpolation time is used for both streams.  pred_actions is
+    the clean-action estimate induced by the predicted action velocity and is
+    returned for the optional frozen-LeWM consistency loss.
+    """
+    if flow.action_dim is None:
+        raise ValueError("joint_flow_matching_loss requires flow.action_dim.")
+    if actions.size(1) != z_path.size(1) - 1:
+        raise ValueError(
+            "Expected one action block per path transition, got "
+            f"{actions.size(1)} blocks for path length {z_path.size(1)}."
+        )
+    z_start = z_path[:, 0]
+    z_goal = z_path[:, -1]
+    path_target = z_path[:, 1:-1]
+    path_noise = torch.randn(
+        path_target.shape,
+        device=path_target.device,
+        dtype=path_target.dtype,
+        generator=generator,
+    )
+    action_noise = torch.randn(
+        actions.shape,
+        device=actions.device,
+        dtype=actions.dtype,
+        generator=generator,
+    )
+    t = torch.rand(z_path.size(0), device=z_path.device, dtype=z_path.dtype, generator=generator)
+    path_x_t = (1 - t[:, None, None]) * path_noise + t[:, None, None] * path_target
+    action_x_t = (1 - t[:, None, None]) * action_noise + t[:, None, None] * actions
+    path_v, action_v = flow(path_x_t, t, z_start, z_goal, action_x_t)
+    loss_path = F.mse_loss(path_v, path_target - path_noise)
+    loss_action = F.mse_loss(action_v, actions - action_noise)
+    pred_actions = action_x_t + (1 - t[:, None, None]) * action_v
+    return loss_path, loss_action, pred_actions
+
+
 def inverse_dynamics_loss(
     inverse_dynamics: InverseDynamics,
     z_path: torch.Tensor,
@@ -617,6 +866,19 @@ def lewm_consistency_loss(
     pred_actions: torch.Tensor,
     history_size: int = 3,
 ) -> torch.Tensor:
+    """Compare generated action blocks with frozen world-model dynamics.
+
+    Fast-LeWM predicts all action-prefix endpoints from z_0 in parallel;
+    original LeWM retains its historical local autoregressive consistency loss.
+    """
+    if getattr(lewm, "is_fast_lewm", False):
+        action_prefix_emb = lewm.action_encoder(
+            pred_actions,
+            latent=z_path[:, :1],
+        )
+        predicted_path = lewm.predict(z_path[:, :1], action_prefix_emb)
+        return F.mse_loss(predicted_path, z_path[:, 1:])
+
     losses = []
     for t in range(pred_actions.size(1)):
         start = max(0, t - history_size + 1)
@@ -638,13 +900,29 @@ def smoothness_loss(z_path: torch.Tensor) -> torch.Tensor:
 def checkpoint_payload(
     *,
     lewm_checkpoint: str,
-    action_block: int,
+    world_model_type: str = "lewm",
+    fast_source_dir: str | None = None,
+    action_block: int = 5,
     flow: LatentPathFlow,
-    inverse_dynamics: InverseDynamics,
+    inverse_dynamics: InverseDynamics | None,
     cfg: dict[str, Any],
 ) -> dict[str, Any]:
+    """Serialize the joint model; old standalone-IDM payloads remain supported."""
+    inverse_arch = None
+    inverse_state = None
+    if inverse_dynamics is not None:
+        inverse_arch = {
+            "latent_dim": inverse_dynamics.latent_dim,
+            "action_dim": inverse_dynamics.action_dim,
+            "hidden_dim": inverse_dynamics.hidden_dim,
+            "depth": inverse_dynamics.depth,
+            "dropout": inverse_dynamics.dropout,
+        }
+        inverse_state = inverse_dynamics.state_dict()
     return {
         "lewm_checkpoint": lewm_checkpoint,
+        "world_model_type": world_model_type,
+        "fast_source_dir": fast_source_dir,
         "action_block": action_block,
         "arch": {
             "flow": {
@@ -654,16 +932,11 @@ def checkpoint_payload(
                 "max_horizon": flow.max_horizon,
                 "time_dim": flow.time_dim,
                 "dropout": flow.dropout,
+                "action_dim": flow.action_dim,
             },
-            "inverse_dynamics": {
-                "latent_dim": inverse_dynamics.latent_dim,
-                "action_dim": inverse_dynamics.action_dim,
-                "hidden_dim": inverse_dynamics.hidden_dim,
-                "depth": inverse_dynamics.depth,
-                "dropout": inverse_dynamics.dropout,
-            },
+            "inverse_dynamics": inverse_arch,
         },
         "config": cfg,
         "flow_state_dict": flow.state_dict(),
-        "inverse_dynamics_state_dict": inverse_dynamics.state_dict(),
+        "inverse_dynamics_state_dict": inverse_state,
     }

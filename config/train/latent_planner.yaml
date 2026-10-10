@@ -2,8 +2,13 @@ defaults:
   - _self_
 
 lewm_checkpoint: ???
-output_model_name: latent_planner
-subdir: latent_planner/${now:%Y-%m-%d_%H-%M-%S}
+world_model:
+  # lewm: original autoregressive LeWorldModel; fast-lewm: parallel prefix model.
+  type: lewm
+  # null uses this repository's third_party/fast_lewm_runtime checkout.
+  fast_source_dir: null
+output_model_name: joint_latent_planner
+subdir: joint_latent_planner/${now:%Y-%m-%d_%H-%M-%S}
 
 seed: 3072
 device: cuda
@@ -65,19 +70,14 @@ flow:
   time_dim: 64
   dropout: 0.0
 
-inverse_dynamics:
-  hidden_dim: 512
-  depth: 3
-  dropout: 0.0
-
 loss:
   flow:
     weight: 1.0
-  inverse:
+  action:
     weight: 1.0
   consistency:
     weight: 0.1
-    detach_inverse: False
+    detach_actions: False
   smoothness:
     weight: 0.0
 
