@@ -10,8 +10,8 @@ export STABLEWM_HOME=/root/autodl-tmp/pusht
 export HYDRA_FULL_ERROR=1
 
 # Override these environment variables to train against Fast-LeWM.
-WORLD_MODEL_TYPE="${WORLD_MODEL_TYPE:-lewm}"
-WORLD_MODEL_CHECKPOINT="${WORLD_MODEL_CHECKPOINT:-pusht/lewm}"
+WORLD_MODEL_TYPE="fast-lewm"
+WORLD_MODEL_CHECKPOINT="/root/autodl-tmp/pusht/fast-lewm/pusht/Fast-lewm_pusht_object.ckpt"
 
 conda run -n lewm --no-capture-output python train_latent_planner.py \
   lewm_checkpoint="$WORLD_MODEL_CHECKPOINT" \
