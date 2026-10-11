@@ -114,11 +114,25 @@ def run(cfg: DictConfig):
     if policy != "random":
         config = swm.PlanConfig(**cfg.plan_config)
         solver_target = cfg.solver.get("_target_", "")
+        joint_action_dim = None
         if solver_target in {
             "latent_planner.LearnedLatentPathSolver",
             "action_flow_planner.LearnedActionFlowSolver",
         }:
             solver = hydra.utils.instantiate(cfg.solver)
+            # Evaluation is defined for the joint path--action flow only:
+            # one ODE produces both latent route interiors and aligned action
+            # blocks. The runtime selects original LeWM or Fast-LeWM from the
+            # checkpoint metadata, while the evaluation loop itself remains
+            # independent of that world-model implementation.
+            if solver_target == "latent_planner.LearnedLatentPathSolver":
+                joint_action_dim = solver.model.flow.action_dim
+                if joint_action_dim is None:
+                    raise ValueError(
+                        "Evaluation requires a joint path--action checkpoint. "
+                        "Legacy path-only planner + inverse-dynamics checkpoints "
+                        "are not supported by this evaluation entry point."
+                    )
         else:
             model = swm.policy.AutoCostModel(cfg.policy)
             model = model.to("cuda")
@@ -129,6 +143,20 @@ def run(cfg: DictConfig):
         policy = swm.policy.WorldModelPolicy(
             solver=solver, config=config, process=process, transform=transform
         )
+        if solver_target == "latent_planner.LearnedLatentPathSolver":
+            # The solver validates action-block dimensionality later in
+            # configure(), after WorldModelPolicy supplies the real action
+            # space.
+            world_model_type = (
+                "fast-lewm"
+                if getattr(solver.model.lewm, "is_fast_lewm", False)
+                else "lewm"
+            )
+            print(
+                "latent planner mode=joint_path_action "
+                f"action_dim={joint_action_dim} world_model={world_model_type}",
+                flush=True,
+            )
 
     else:
         policy = swm.policy.RandomPolicy()

@@ -269,16 +269,49 @@ class SinusoidalTimeEmbedding(nn.Module):
         return emb
 
 
+class LocalActionFlow(nn.Module):
+    """Shared local action-flow update for one latent transition.
+
+    The same module is evaluated independently for every transition in the
+    route. It only receives the tentative action block and the embeddings of
+    that transition's two endpoint subgoals; global coordination is handled by
+    the path planner through action-to-path messages.
+    """
+
+    def __init__(self, hidden_dim: int, dropout: float = 0.0, hidden_multiplier: int = 2):
+        super().__init__()
+        if hidden_multiplier < 1:
+            raise ValueError("hidden_multiplier must be at least one.")
+        self.hidden_dim = hidden_dim
+        self.hidden_multiplier = hidden_multiplier
+        self.norm = nn.LayerNorm(hidden_dim * 3)
+        inner_dim = hidden_dim * hidden_multiplier
+        self.net = nn.Sequential(
+            nn.Linear(hidden_dim * 3, inner_dim),
+            nn.SiLU(),
+            nn.Dropout(dropout),
+            nn.Linear(inner_dim, hidden_dim),
+        )
+
+    def forward(
+        self,
+        action_hidden: torch.Tensor,
+        left_endpoint: torch.Tensor,
+        right_endpoint: torch.Tensor,
+    ) -> torch.Tensor:
+        x = torch.cat([action_hidden, left_endpoint, right_endpoint], dim=-1)
+        action_update = self.net(self.norm(x))
+        return action_hidden + action_update
+
+
 class LatentPathFlow(nn.Module):
-    """Joint rectified-flow model for latent-path interiors and action blocks.
+    """Global path flow coupled to a shared local action-flow module.
 
-    A path token and an action token share a transition index: the action token
-    realizes the transition from the preceding latent state to that path token.
-    The model therefore denoises a route and its action realization together,
-    rather than decoding each transition afterwards with an independent MLP.
-
-    action_dim=None retains the original path-only behavior. It is used
-    only to load and evaluate pre-joint-flow checkpoints.
+    The path branch plans the whole route with self-attention.  For each
+    transition, one shared LocalActionFlow sees only that transition's two
+    endpoint subgoals and its own noisy action block.  Its message is fed back
+    only to the adjacent path tokens; subsequent global path-attention layers
+    propagate those local feasibility signals across the route.
     """
 
     def __init__(
@@ -290,6 +323,7 @@ class LatentPathFlow(nn.Module):
         time_dim: int = 64,
         dropout: float = 0.0,
         action_dim: int | None = None,
+        action_flow_hidden_multiplier: int = 2,
     ):
         super().__init__()
         self.latent_dim = latent_dim
@@ -299,6 +333,7 @@ class LatentPathFlow(nn.Module):
         self.time_dim = time_dim
         self.dropout = dropout
         self.action_dim = action_dim
+        self.action_flow_hidden_multiplier = action_flow_hidden_multiplier
         self.pos_embedding = nn.Parameter(
             torch.randn(1, max_horizon - 1, hidden_dim) * 0.02
         )
@@ -321,17 +356,54 @@ class LatentPathFlow(nn.Module):
             nn.SiLU(),
             nn.Linear(hidden_dim, hidden_dim),
         )
-        enc_layer = nn.TransformerEncoderLayer(
-            d_model=hidden_dim,
-            nhead=8,
-            dim_feedforward=hidden_dim * 4,
-            dropout=dropout,
-            activation="gelu",
-            batch_first=True,
-            norm_first=True,
+        self.path_blocks = nn.ModuleList(
+            [
+                nn.TransformerEncoderLayer(
+                    d_model=hidden_dim,
+                    nhead=8,
+                    dim_feedforward=hidden_dim * 4,
+                    dropout=dropout,
+                    activation="gelu",
+                    batch_first=True,
+                    norm_first=True,
+                )
+                for _ in range(depth)
+            ]
         )
-        self.net = nn.TransformerEncoder(enc_layer, num_layers=depth)
-        self.out = nn.Sequential(nn.LayerNorm(hidden_dim), nn.Linear(hidden_dim, latent_dim))
+        if action_dim is not None:
+            # One small IDM-like action flow is shared across every horizon
+            # transition and repeatedly exchanges messages with the planner.
+            self.local_action_flow = LocalActionFlow(
+                hidden_dim,
+                dropout=dropout,
+                hidden_multiplier=action_flow_hidden_multiplier,
+            )
+            self.action_clean_proj = nn.Linear(action_dim, hidden_dim)
+            self.action_message = nn.Sequential(
+                nn.LayerNorm(hidden_dim * 4),
+                nn.Linear(hidden_dim * 4, hidden_dim * action_flow_hidden_multiplier),
+                nn.SiLU(),
+                nn.Dropout(dropout),
+                nn.Linear(hidden_dim * action_flow_hidden_multiplier, hidden_dim),
+            )
+            self.action_to_left = nn.Linear(hidden_dim, hidden_dim, bias=False)
+            self.action_to_right = nn.Linear(hidden_dim, hidden_dim, bias=False)
+            self.action_global = nn.Sequential(
+                nn.LayerNorm(hidden_dim * 2),
+                nn.Linear(hidden_dim * 2, hidden_dim),
+            )
+            self.path_feedback_norm = nn.LayerNorm(hidden_dim)
+        else:
+            self.local_action_flow = None
+            self.action_clean_proj = None
+            self.action_message = None
+            self.action_to_left = None
+            self.action_to_right = None
+            self.action_global = None
+            self.path_feedback_norm = None
+        self.out = nn.Sequential(
+            nn.LayerNorm(hidden_dim), nn.Linear(hidden_dim, latent_dim)
+        )
         self.action_out = (
             nn.Sequential(nn.LayerNorm(hidden_dim), nn.Linear(hidden_dim, action_dim))
             if action_dim is not None
@@ -346,25 +418,23 @@ class LatentPathFlow(nn.Module):
         z_goal: torch.Tensor,
         action_x_t: torch.Tensor | None = None,
     ) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
-        n_tokens = x_t.size(1)
-        if n_tokens > self.max_horizon - 1:
+        n_path_tokens = x_t.size(1)
+        if n_path_tokens > self.max_horizon - 1:
             raise ValueError(
-                f"Requested {n_tokens + 1} horizon, but max_horizon={self.max_horizon}"
+                f"Requested {n_path_tokens + 1} horizon, but max_horizon={self.max_horizon}"
             )
-        cond = (
-            self.start_proj(z_start)
-            + self.goal_proj(z_goal)
-            + self.time_embed(t.float())
-        )
-        path_tokens = self.token_proj(x_t)
-        path_tokens = (
-            path_tokens
-            + self.pos_embedding[:, :n_tokens]
+        time_cond = self.time_embed(t.float())
+        global_cond = self.start_proj(z_start) + self.goal_proj(z_goal) + time_cond
+        path_hidden = (
+            self.token_proj(x_t)
+            + self.pos_embedding[:, :n_path_tokens]
             + self.path_type_embedding
-            + cond[:, None]
+            + global_cond[:, None]
         )
         if action_x_t is None:
-            return self.out(self.net(path_tokens))
+            for block in self.path_blocks:
+                path_hidden = block(path_hidden)
+            return self.out(path_hidden)
 
         if self.action_dim is None or self.action_token_proj is None:
             raise ValueError(
@@ -376,24 +446,70 @@ class LatentPathFlow(nn.Module):
                 f"Expected action_x_t [B, H, {self.action_dim}], got "
                 f"{tuple(action_x_t.shape)}."
             )
-        if action_x_t.size(1) != n_tokens + 1:
+        if action_x_t.size(1) != n_path_tokens + 1:
             raise ValueError(
                 "Joint flow requires one action block for every full path "
-                f"transition, got {action_x_t.size(1)} blocks for {n_tokens + 1}."
+                f"transition, got {action_x_t.size(1)} blocks for {n_path_tokens + 1}."
             )
 
-        action_tokens = self.action_token_proj(action_x_t)
-        action_tokens = (
-            action_tokens
+        # The local IDM-like flow receives no direct global start/goal
+        # condition. It operates on its own action block and only the two
+        # endpoint subgoals below; global task coordination remains in the
+        # planner branch.
+        action_hidden = (
+            self.action_token_proj(action_x_t)
             + self.action_pos_embedding[:, : action_x_t.size(1)]
             + self.action_type_embedding
-            + cond[:, None]
+            + time_cond[:, None]
         )
-        # This is a route generator, not a causal world model: actions and
-        # subgoals deliberately attend to the whole route.
-        joint_tokens = self.net(torch.cat([path_tokens, action_tokens], dim=1))
-        path_hidden = joint_tokens[:, :n_tokens]
-        action_hidden = joint_tokens[:, n_tokens:]
+        # Boundary subgoals are fixed conditions; interior subgoals are the
+        # planner's current noisy path tokens.  An action module sees exactly
+        # one adjacent endpoint pair, never the full path directly.
+        start_endpoint = (self.start_proj(z_start) + time_cond)[:, None]
+        goal_endpoint = (self.goal_proj(z_goal) + time_cond)[:, None]
+        for block in self.path_blocks:
+            path_hidden = block(path_hidden)
+            endpoints = torch.cat([start_endpoint, path_hidden, goal_endpoint], dim=1)
+            left_endpoint = endpoints[:, :-1]
+            right_endpoint = endpoints[:, 1:]
+            action_hidden = self.local_action_flow(
+                action_hidden,
+                left_endpoint,
+                right_endpoint,
+            )
+            # Derive the planner feedback from the action proposal itself.
+            # The clean-action estimate is more stable across flow time than
+            # raw velocity, whose scale changes with t.
+            provisional_velocity = self.action_out(action_hidden)
+            clean_action = action_x_t + (1 - t[:, None, None]) * provisional_velocity
+            action_message = self.action_message(
+                torch.cat(
+                    [
+                        action_hidden,
+                        left_endpoint,
+                        right_endpoint,
+                        self.action_clean_proj(clean_action),
+                    ],
+                    dim=-1,
+                )
+            )
+
+            # Action i ends at path token i and action i+1 starts there.  The
+            # feedback is therefore strictly local; path self-attention in the
+            # next layer carries that signal to the rest of the route.
+            local_feedback = (
+                self.action_to_right(action_message[:, :-1])
+                + self.action_to_left(action_message[:, 1:])
+            )
+            global_message = torch.cat(
+                [action_message.mean(dim=1), action_message.amax(dim=1)], dim=-1
+            )
+            path_hidden = self.path_feedback_norm(
+                path_hidden
+                + local_feedback
+                + self.action_global(global_message)[:, None]
+            )
+
         return self.out(path_hidden), self.action_out(action_hidden)
 
 
@@ -449,7 +565,21 @@ class LatentPlannerRuntime(nn.Module):
         return next(self.parameters()).device
 
     @classmethod
-    def from_checkpoint(cls, checkpoint: str | Path, device: str | torch.device = "cpu"):
+    def from_checkpoint(
+        cls,
+        checkpoint: str | Path,
+        device: str | torch.device = "cpu",
+        *,
+        world_model_checkpoint: str | Path | None = None,
+        world_model_type: str | None = None,
+        fast_source_dir: str | Path | None = None,
+    ):
+        """Load a joint planner, optionally relocating its frozen world model.
+
+        The checkpoint remains the source of truth for the world-model type.
+        world_model_checkpoint is only a path relocation override for
+        evaluation on a different machine.
+        """
         path = _resolve_checkpoint(checkpoint)
         payload = torch.load(path, map_location="cpu", weights_only=False)
         if not isinstance(payload, dict):
@@ -460,9 +590,13 @@ class LatentPlannerRuntime(nn.Module):
 
         arch = payload["arch"]
         lewm = load_world_model(
-            payload["lewm_checkpoint"],
-            world_model_type=payload.get("world_model_type", "lewm"),
-            fast_source_dir=payload.get("fast_source_dir"),
+            world_model_checkpoint or payload["lewm_checkpoint"],
+            world_model_type=world_model_type or payload.get("world_model_type", "lewm"),
+            fast_source_dir=(
+                fast_source_dir
+                if fast_source_dir is not None
+                else payload.get("fast_source_dir")
+            ),
         )
         flow = LatentPathFlow(**arch["flow"])
         # Pre-joint-flow checkpoints lack the two zero-initialized token-type
@@ -621,7 +755,8 @@ class LatentPlannerRuntime(nn.Module):
         horizon: int,
         num_samples: int,
         flow_steps: int,
-        score_mode: str = "rollout_goal",
+        score_mode: str = "segment_weighted",
+        segment_decay: float = 0.95,
         goal_weight: float = 1.0,
         consistency_weight: float = 0.0,
         smoothness_weight: float = 0.0,
@@ -638,7 +773,29 @@ class LatentPlannerRuntime(nn.Module):
             generator=generator,
         )
         score_mode = score_mode.lower()
-        if score_mode == "rollout_goal":
+        segment_costs = None
+        if score_mode == "segment_weighted":
+            segment_costs = self.segment_rollout_errors(paths, actions)
+            if not 0.0 < segment_decay <= 1.0:
+                raise ValueError(
+                    f"segment_decay must be in (0, 1], got {segment_decay}."
+                )
+            weights = torch.pow(
+                torch.as_tensor(
+                    segment_decay,
+                    device=segment_costs.device,
+                    dtype=segment_costs.dtype,
+                ),
+                torch.arange(
+                    segment_costs.size(-1),
+                    device=segment_costs.device,
+                    dtype=segment_costs.dtype,
+                ),
+            )
+            weights = weights / weights.sum().clamp_min(torch.finfo(weights.dtype).eps)
+            cost = (segment_costs * weights[None, None]).sum(dim=-1)
+            goal_cost = cost
+        elif score_mode == "rollout_goal":
             rollout_final = self.rollout_final_latent(z_start, actions, history_size)
             goal_cost = F.mse_loss(
                 rollout_final,
@@ -647,7 +804,6 @@ class LatentPlannerRuntime(nn.Module):
             ).mean(dim=-1)
             cost = goal_weight * goal_cost
         elif score_mode == "first":
-            # No reranking ablation: execute the first sampled candidate as-is.
             goal_cost = torch.zeros(actions.shape[:2], device=actions.device, dtype=actions.dtype)
             cost = goal_cost.clone()
         elif score_mode == "path_smoothness":
@@ -657,14 +813,14 @@ class LatentPlannerRuntime(nn.Module):
         else:
             raise ValueError(
                 f"Unknown latent planner score_mode={score_mode!r}. "
-                "Expected one of: rollout_goal, first, path_smoothness."
+                "Expected one of: segment_weighted, rollout_goal, first, "
+                "path_smoothness."
             )
 
         if consistency_weight:
             rollout_paths = self.rollout_paths(z_start, actions, history_size)
             consistency = (rollout_paths - paths).pow(2).mean(dim=(-1, -2))
             cost = cost + consistency_weight * consistency
-
         if smoothness_weight:
             accel = paths[:, :, 2:] - 2 * paths[:, :, 1:-1] + paths[:, :, :-2]
             smooth = accel.pow(2).mean(dim=(-1, -2))
@@ -677,7 +833,38 @@ class LatentPlannerRuntime(nn.Module):
             "costs": cost[batch_idx, best].detach().cpu(),
             "all_costs": cost.detach().cpu(),
             "goal_costs": goal_cost.detach().cpu(),
+            "segment_costs": (
+                segment_costs.detach().cpu() if segment_costs is not None else None
+            ),
         }
+
+    @torch.no_grad()
+    def segment_rollout_errors(
+        self,
+        paths: torch.Tensor,
+        actions: torch.Tensor,
+    ) -> torch.Tensor:
+        """Return one independent LeWM feasibility error per path segment.
+
+        Each action block is evaluated from the joint planner's own segment
+        start, rather than autoregressively from the prior LeWM prediction.
+        This isolates local action/path compatibility and prevents a late
+        accurate segment from compensating for an infeasible early one.
+        """
+        b, s, h = actions.shape[:3]
+        d = paths.size(-1)
+        starts = paths[:, :, :-1].reshape(b * s * h, 1, d)
+        targets = paths[:, :, 1:].reshape(b * s * h, d)
+        action_blocks = actions.reshape(b * s * h, 1, -1).to(self.device)
+        if getattr(self.lewm, "is_fast_lewm", False):
+            action_emb = self.lewm.action_encoder(action_blocks, latent=starts)
+            predicted = self.lewm.predict(starts, action_emb)[:, -1]
+        else:
+            action_emb = self.lewm.action_encoder(action_blocks)
+            predicted = self.lewm.predict(starts, action_emb)[:, -1]
+        self.rollout_count += b * s * h
+        errors = F.mse_loss(predicted, targets, reduction="none").mean(dim=-1)
+        return errors.reshape(b, s, h)
 
     @torch.no_grad()
     def rollout_paths(
@@ -711,19 +898,24 @@ class LearnedLatentPathSolver:
         batch_size: int = 1,
         num_samples: int = 64,
         flow_steps: int = 16,
-        score_mode: str = "rollout_goal",
+        score_mode: str = "segment_weighted",
+        segment_decay: float = 0.95,
         goal_weight: float = 1.0,
         consistency_weight: float = 0.0,
         smoothness_weight: float = 0.0,
         device: str | torch.device = "cpu",
         seed: int = 1234,
         history_size: int = 3,
+        world_model_checkpoint: str | Path | None = None,
+        world_model_type: str | None = None,
+        fast_source_dir: str | Path | None = None,
     ):
         self.checkpoint = checkpoint
         self.batch_size = batch_size
         self.num_samples = num_samples
         self.flow_steps = flow_steps
         self.score_mode = score_mode
+        self.segment_decay = segment_decay
         self.goal_weight = goal_weight
         self.consistency_weight = consistency_weight
         self.smoothness_weight = smoothness_weight
@@ -732,7 +924,13 @@ class LearnedLatentPathSolver:
             requested_device = torch.device("cpu")
         self.device = requested_device
         self.history_size = history_size
-        self.model = LatentPlannerRuntime.from_checkpoint(checkpoint, device=self.device)
+        self.model = LatentPlannerRuntime.from_checkpoint(
+            checkpoint,
+            device=self.device,
+            world_model_checkpoint=world_model_checkpoint,
+            world_model_type=world_model_type,
+            fast_source_dir=fast_source_dir,
+        )
         self.torch_gen = torch.Generator(device=self.device).manual_seed(seed)
 
     def configure(self, *, action_space: gym.Space, n_envs: int, config: Any) -> None:
@@ -742,6 +940,19 @@ class LearnedLatentPathSolver:
         self._action_dim = int(np.prod(action_space.shape[1:]))
         if not isinstance(action_space, Box):
             raise TypeError(f"LearnedLatentPathSolver expects Box action space, got {type(action_space)}")
+        if self.model.flow.action_dim is None:
+            raise ValueError(
+                "LearnedLatentPathSolver requires a joint path--action flow "
+                "checkpoint; legacy path-only planners are unsupported."
+            )
+        expected_action_dim = self._action_dim * int(config.action_block)
+        if self.model.flow.action_dim != expected_action_dim:
+            raise ValueError(
+                "Joint planner action-block dimension does not match the "
+                f"environment: checkpoint has {self.model.flow.action_dim}, "
+                f"expected {expected_action_dim} "
+                f"(action_block={config.action_block})."
+            )
 
     @property
     def n_envs(self) -> int:
@@ -774,6 +985,7 @@ class LearnedLatentPathSolver:
                 num_samples=self.num_samples,
                 flow_steps=self.flow_steps,
                 score_mode=self.score_mode,
+                segment_decay=self.segment_decay,
                 goal_weight=self.goal_weight,
                 consistency_weight=self.consistency_weight,
                 smoothness_weight=self.smoothness_weight,
@@ -933,6 +1145,7 @@ def checkpoint_payload(
                 "time_dim": flow.time_dim,
                 "dropout": flow.dropout,
                 "action_dim": flow.action_dim,
+                "action_flow_hidden_multiplier": flow.action_flow_hidden_multiplier,
             },
             "inverse_dynamics": inverse_arch,
         },

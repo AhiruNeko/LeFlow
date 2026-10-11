@@ -24,4 +24,4 @@ conda run -n lewm --no-capture-output python train_latent_planner.py \
   planner.action_block=5 \
   epochs=10 \
   loader.batch_size=128 \
-  subdir=joint_latent_planner/pusht_h5_ep10
+  subdir=global_path_local_action_flow/pusht_h5_ep10

@@ -7,8 +7,8 @@ world_model:
   type: lewm
   # null uses this repository's third_party/fast_lewm_runtime checkout.
   fast_source_dir: null
-output_model_name: joint_latent_planner
-subdir: joint_latent_planner/${now:%Y-%m-%d_%H-%M-%S}
+output_model_name: global_path_local_action_flow
+subdir: global_path_local_action_flow/${now:%Y-%m-%d_%H-%M-%S}
 
 seed: 3072
 device: cuda
@@ -69,6 +69,8 @@ flow:
   depth: 4
   time_dim: 64
   dropout: 0.0
+  # Width multiplier for the shared local IDM-like action flow.
+  action_flow_hidden_multiplier: 2
 
 loss:
   flow:
