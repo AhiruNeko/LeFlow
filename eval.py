@@ -4,6 +4,7 @@ os.environ["MUJOCO_GL"] = "egl"
 
 import json
 import time
+import tempfile
 from pathlib import Path
 
 import hydra
@@ -74,7 +75,7 @@ def load_heldout_episodes(cfg: DictConfig) -> set[int] | None:
 
 @hydra.main(version_base=None, config_path="./config/eval", config_name="pusht")
 def run(cfg: DictConfig):
-    """Run evaluation of dinowm vs random policy."""
+    """Evaluate a random policy or the joint latent path--action planner."""
     assert (
         cfg.plan_config.horizon * cfg.plan_config.action_block <= cfg.eval.eval_budget
     ), "Planning horizon must be smaller than or equal to eval_budget"
@@ -115,24 +116,18 @@ def run(cfg: DictConfig):
         config = swm.PlanConfig(**cfg.plan_config)
         solver_target = cfg.solver.get("_target_", "")
         joint_action_dim = None
-        if solver_target in {
-            "latent_planner.LearnedLatentPathSolver",
-            "action_flow_planner.LearnedActionFlowSolver",
-        }:
+        is_joint_latent_flow = solver_target == "latent_planner.LearnedLatentPathSolver"
+        if is_joint_latent_flow:
             solver = hydra.utils.instantiate(cfg.solver)
-            # Evaluation is defined for the joint path--action flow only:
-            # one ODE produces both latent route interiors and aligned action
-            # blocks. The runtime selects original LeWM or Fast-LeWM from the
-            # checkpoint metadata, while the evaluation loop itself remains
-            # independent of that world-model implementation.
-            if solver_target == "latent_planner.LearnedLatentPathSolver":
-                joint_action_dim = solver.model.flow.action_dim
-                if joint_action_dim is None:
-                    raise ValueError(
-                        "Evaluation requires a joint path--action checkpoint. "
-                        "Legacy path-only planner + inverse-dynamics checkpoints "
-                        "are not supported by this evaluation entry point."
-                    )
+            # A single joint ODE produces aligned latent route interiors and
+            # action blocks. Evaluation must not fall back to a separate IDM.
+            joint_action_dim = solver.model.flow.action_dim
+            if joint_action_dim is None:
+                raise ValueError(
+                    "Evaluation requires a joint path--action checkpoint. "
+                    "Legacy path-only planner + inverse-dynamics checkpoints "
+                    "are not supported by this evaluation entry point."
+                )
         else:
             model = swm.policy.AutoCostModel(cfg.policy)
             model = model.to("cuda")
@@ -143,7 +138,7 @@ def run(cfg: DictConfig):
         policy = swm.policy.WorldModelPolicy(
             solver=solver, config=config, process=process, transform=transform
         )
-        if solver_target == "latent_planner.LearnedLatentPathSolver":
+        if is_joint_latent_flow:
             # The solver validates action-block dimensionality later in
             # configure(), after WorldModelPolicy supplies the real action
             # space.
@@ -203,6 +198,13 @@ def run(cfg: DictConfig):
 
     world.set_policy(policy)
 
+    save_artifacts = bool(cfg.eval.get("save_artifacts", True))
+    temporary_video_dir = None
+    if save_artifacts:
+        video_path = results_path
+    else:
+        temporary_video_dir = tempfile.TemporaryDirectory(prefix="leflow_eval_")
+        video_path = Path(temporary_video_dir.name)
     start_time = time.time()
     metrics = world.evaluate_from_dataset(
         dataset,
@@ -211,25 +213,28 @@ def run(cfg: DictConfig):
         eval_budget=cfg.eval.eval_budget,
         episodes_idx=eval_episodes.tolist(),
         callables=OmegaConf.to_container(cfg.eval.get("callables"), resolve=True),
-        video_path=results_path,
+        video_path=video_path,
     )
+    if temporary_video_dir is not None:
+        temporary_video_dir.cleanup()
     end_time = time.time()
-    
+
     print(metrics)
 
-    results_path = results_path / cfg.output.filename
-    results_path.parent.mkdir(parents=True, exist_ok=True)
+    if save_artifacts:
+        results_path = results_path / cfg.output.filename
+        results_path.parent.mkdir(parents=True, exist_ok=True)
 
-    with results_path.open("a") as f:
-        f.write("\n")  # separate from previous runs
+        with results_path.open("a") as f:
+            f.write("\n")  # separate from previous runs
 
-        f.write("==== CONFIG ====\n")
-        f.write(OmegaConf.to_yaml(cfg))
-        f.write("\n")
+            f.write("==== CONFIG ====\n")
+            f.write(OmegaConf.to_yaml(cfg))
+            f.write("\n")
 
-        f.write("==== RESULTS ====\n")
-        f.write(f"metrics: {metrics}\n")
-        f.write(f"evaluation_time: {end_time - start_time} seconds\n")
+            f.write("==== RESULTS ====\n")
+            f.write(f"metrics: {metrics}\n")
+            f.write(f"evaluation_time: {end_time - start_time} seconds\n")
 
 
 if __name__ == "__main__":

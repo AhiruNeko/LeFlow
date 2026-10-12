@@ -33,6 +33,8 @@ plan_config:
 # evaluation from dataset (replay expert trajectories)
 eval:
   num_eval: 50
+  # Set false for terminal-only batch evaluation: no rollout videos or results text.
+  save_artifacts: true
   goal_offset_steps: 25
   eval_budget: 50
   img_size: 224
