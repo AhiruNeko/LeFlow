@@ -270,12 +270,12 @@ class SinusoidalTimeEmbedding(nn.Module):
 
 
 class LocalActionFlow(nn.Module):
-    """Shared local action-flow update for one latent transition.
+    """Shared local action-flow update conditioned on a denoised path edge.
 
-    The same module is evaluated independently for every transition in the
-    route. It only receives the tentative action block and the embeddings of
-    that transition's two endpoint subgoals; global coordination is handled by
-    the path planner through action-to-path messages.
+    The action module is intentionally a compact MLP rather than a second
+    Transformer.  Global route coordination stays in the path branch; this
+    module answers whether its own action block can realize one explicit
+    predicted transition.
     """
 
     def __init__(self, hidden_dim: int, dropout: float = 0.0, hidden_multiplier: int = 2):
@@ -284,10 +284,10 @@ class LocalActionFlow(nn.Module):
             raise ValueError("hidden_multiplier must be at least one.")
         self.hidden_dim = hidden_dim
         self.hidden_multiplier = hidden_multiplier
-        self.norm = nn.LayerNorm(hidden_dim * 3)
+        self.norm = nn.LayerNorm(hidden_dim * 4)
         inner_dim = hidden_dim * hidden_multiplier
         self.net = nn.Sequential(
-            nn.Linear(hidden_dim * 3, inner_dim),
+            nn.Linear(hidden_dim * 4, inner_dim),
             nn.SiLU(),
             nn.Dropout(dropout),
             nn.Linear(inner_dim, hidden_dim),
@@ -298,10 +298,13 @@ class LocalActionFlow(nn.Module):
         action_hidden: torch.Tensor,
         left_endpoint: torch.Tensor,
         right_endpoint: torch.Tensor,
+        segment_delta: torch.Tensor,
     ) -> torch.Tensor:
-        x = torch.cat([action_hidden, left_endpoint, right_endpoint], dim=-1)
-        action_update = self.net(self.norm(x))
-        return action_hidden + action_update
+        x = torch.cat(
+            [action_hidden, left_endpoint, right_endpoint, segment_delta],
+            dim=-1,
+        )
+        return action_hidden + self.net(self.norm(x))
 
 
 class LatentPathFlow(nn.Module):
@@ -379,9 +382,13 @@ class LatentPathFlow(nn.Module):
                 hidden_multiplier=action_flow_hidden_multiplier,
             )
             self.action_clean_proj = nn.Linear(action_dim, hidden_dim)
+            # These projections receive the actual provisional clean latent
+            # states, rather than only planner hidden features.
+            self.path_endpoint_proj = nn.Linear(latent_dim, hidden_dim)
+            self.path_delta_proj = nn.Linear(latent_dim, hidden_dim)
             self.action_message = nn.Sequential(
-                nn.LayerNorm(hidden_dim * 4),
-                nn.Linear(hidden_dim * 4, hidden_dim * action_flow_hidden_multiplier),
+                nn.LayerNorm(hidden_dim * 5),
+                nn.Linear(hidden_dim * 5, hidden_dim * action_flow_hidden_multiplier),
                 nn.SiLU(),
                 nn.Dropout(dropout),
                 nn.Linear(hidden_dim * action_flow_hidden_multiplier, hidden_dim),
@@ -396,6 +403,8 @@ class LatentPathFlow(nn.Module):
         else:
             self.local_action_flow = None
             self.action_clean_proj = None
+            self.path_endpoint_proj = None
+            self.path_delta_proj = None
             self.action_message = None
             self.action_to_left = None
             self.action_to_right = None
@@ -452,51 +461,53 @@ class LatentPathFlow(nn.Module):
                 f"transition, got {action_x_t.size(1)} blocks for {n_path_tokens + 1}."
             )
 
-        # The local IDM-like flow receives no direct global start/goal
-        # condition. It operates on its own action block and only the two
-        # endpoint subgoals below; global task coordination remains in the
-        # planner branch.
         action_hidden = (
             self.action_token_proj(action_x_t)
             + self.action_pos_embedding[:, : action_x_t.size(1)]
             + self.action_type_embedding
             + time_cond[:, None]
         )
-        # Boundary subgoals are fixed conditions; interior subgoals are the
-        # planner's current noisy path tokens.  An action module sees exactly
-        # one adjacent endpoint pair, never the full path directly.
-        start_endpoint = (self.start_proj(z_start) + time_cond)[:, None]
-        goal_endpoint = (self.goal_proj(z_goal) + time_cond)[:, None]
         for block in self.path_blocks:
             path_hidden = block(path_hidden)
-            endpoints = torch.cat([start_endpoint, path_hidden, goal_endpoint], dim=1)
-            left_endpoint = endpoints[:, :-1]
-            right_endpoint = endpoints[:, 1:]
+
+            # Convert this layer's path-flow prediction to an explicit clean
+            # route estimate.  Local action flow therefore conditions on
+            # predicted latent subgoals, not an ambiguous planner hidden state.
+            provisional_path_velocity = self.out(path_hidden)
+            clean_interiors = x_t + (1 - t[:, None, None]) * provisional_path_velocity
+            clean_path = torch.cat(
+                [z_start[:, None], clean_interiors, z_goal[:, None]],
+                dim=1,
+            )
+            endpoint_hidden = self.path_endpoint_proj(clean_path) + time_cond[:, None]
+            left_endpoint = endpoint_hidden[:, :-1]
+            right_endpoint = endpoint_hidden[:, 1:]
+            segment_delta = self.path_delta_proj(clean_path[:, 1:] - clean_path[:, :-1])
+
             action_hidden = self.local_action_flow(
                 action_hidden,
                 left_endpoint,
                 right_endpoint,
+                segment_delta,
             )
-            # Derive the planner feedback from the action proposal itself.
-            # The clean-action estimate is more stable across flow time than
-            # raw velocity, whose scale changes with t.
-            provisional_velocity = self.action_out(action_hidden)
-            clean_action = action_x_t + (1 - t[:, None, None]) * provisional_velocity
+            provisional_action_velocity = self.action_out(action_hidden)
+            clean_action = action_x_t + (1 - t[:, None, None]) * provisional_action_velocity
             action_message = self.action_message(
                 torch.cat(
                     [
                         action_hidden,
                         left_endpoint,
                         right_endpoint,
+                        segment_delta,
                         self.action_clean_proj(clean_action),
                     ],
                     dim=-1,
                 )
             )
 
-            # Action i ends at path token i and action i+1 starts there.  The
-            # feedback is therefore strictly local; path self-attention in the
-            # next layer carries that signal to the rest of the route.
+            # Action i ends at path token i and action i+1 starts there. The
+            # next path-attention layer propagates this local feasibility signal
+            # across the whole route.
             local_feedback = (
                 self.action_to_right(action_message[:, :-1])
                 + self.action_to_left(action_message[:, 1:])
@@ -1023,13 +1034,8 @@ def joint_flow_matching_loss(
     z_path: torch.Tensor,
     actions: torch.Tensor,
     generator: torch.Generator | None = None,
-) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-    """Flow-matching losses for aligned path interiors and action blocks.
-
-    The same interpolation time is used for both streams.  pred_actions is
-    the clean-action estimate induced by the predicted action velocity and is
-    returned for the optional frozen-LeWM consistency loss.
-    """
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    """Return path/action FM losses and their current clean estimates."""
     if flow.action_dim is None:
         raise ValueError("joint_flow_matching_loss requires flow.action_dim.")
     if actions.size(1) != z_path.size(1) - 1:
@@ -1052,14 +1058,22 @@ def joint_flow_matching_loss(
         dtype=actions.dtype,
         generator=generator,
     )
-    t = torch.rand(z_path.size(0), device=z_path.device, dtype=z_path.dtype, generator=generator)
+    t = torch.rand(
+        z_path.size(0),
+        device=z_path.device,
+        dtype=z_path.dtype,
+        generator=generator,
+    )
     path_x_t = (1 - t[:, None, None]) * path_noise + t[:, None, None] * path_target
     action_x_t = (1 - t[:, None, None]) * action_noise + t[:, None, None] * actions
     path_v, action_v = flow(path_x_t, t, z_start, z_goal, action_x_t)
     loss_path = F.mse_loss(path_v, path_target - path_noise)
     loss_action = F.mse_loss(action_v, actions - action_noise)
+
+    pred_interiors = path_x_t + (1 - t[:, None, None]) * path_v
+    pred_path = torch.cat([z_start[:, None], pred_interiors, z_goal[:, None]], dim=1)
     pred_actions = action_x_t + (1 - t[:, None, None]) * action_v
-    return loss_path, loss_action, pred_actions
+    return loss_path, loss_action, pred_path, pred_actions
 
 
 def inverse_dynamics_loss(
@@ -1100,6 +1114,53 @@ def lewm_consistency_loss(
         pred = lewm.predict(emb_hist, act_emb)[:, -1]
         losses.append(F.mse_loss(pred, z_path[:, t + 1]))
     return torch.stack(losses).mean()
+
+
+
+def lewm_segment_rollout(
+    lewm: nn.Module,
+    path: torch.Tensor,
+    actions: torch.Tensor,
+) -> torch.Tensor:
+    """Predict each action block independently from its proposed path start."""
+    batch, horizon, _ = actions.shape
+    latent_dim = path.size(-1)
+    starts = path[:, :-1].reshape(batch * horizon, 1, latent_dim)
+    action_blocks = actions.reshape(batch * horizon, 1, -1)
+    if getattr(lewm, "is_fast_lewm", False):
+        action_emb = lewm.action_encoder(action_blocks, latent=starts)
+    else:
+        action_emb = lewm.action_encoder(action_blocks)
+    return lewm.predict(starts, action_emb)[:, -1].reshape(batch, horizon, latent_dim)
+
+
+def lewm_segment_feasibility_losses(
+    lewm: nn.Module,
+    pred_path: torch.Tensor,
+    pred_actions: torch.Tensor,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Separate IDM and planner gradients for local path/action feasibility.
+
+    The action branch learns to execute the planner's currently proposed
+    transition.  The planner branch learns to propose the transition that the
+    current action branch and frozen LeWM actually realize.  Stop-gradients
+    prevent the two branches from reducing the loss merely by co-adapting.
+    """
+    action_rollout = lewm_segment_rollout(
+        lewm,
+        pred_path.detach(),
+        pred_actions,
+    )
+    action_loss = F.mse_loss(action_rollout, pred_path[:, 1:].detach())
+
+    with torch.no_grad():
+        path_rollout = lewm_segment_rollout(
+            lewm,
+            pred_path.detach(),
+            pred_actions.detach(),
+        )
+    path_loss = F.mse_loss(pred_path[:, 1:], path_rollout)
+    return action_loss, path_loss
 
 
 def smoothness_loss(z_path: torch.Tensor) -> torch.Tensor:

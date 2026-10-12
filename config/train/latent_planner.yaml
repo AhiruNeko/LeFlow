@@ -78,8 +78,14 @@ loss:
   action:
     weight: 1.0
   consistency:
+    # Expert trajectory alignment through frozen LeWM.
     weight: 0.1
     detach_actions: False
+  feasibility:
+    # Local planner-edge / action-block agreement through frozen LeWM.
+    action_weight: 0.05
+    path_weight: 0.05
+    warmup_steps: 2000
   smoothness:
     weight: 0.0
 

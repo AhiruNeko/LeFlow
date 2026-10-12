@@ -13,6 +13,7 @@ from latent_planner import (
     checkpoint_payload,
     joint_flow_matching_loss,
     lewm_consistency_loss,
+    lewm_segment_feasibility_losses,
     load_world_model,
     smoothness_loss,
     stablewm_cache_dir,
@@ -163,13 +164,27 @@ def step_batch(
     flow: LatentPathFlow,
     cfg: DictConfig,
     device: torch.device,
+    feasibility_scale: float = 1.0,
 ) -> dict[str, torch.Tensor]:
     batch["action"] = torch.nan_to_num(batch["action"].to(device), 0.0)
     z_path = encode_latents(lewm, batch, device)
     actions = batch["action"][:, : cfg.planner.horizon]
-    loss_flow, loss_action, pred_actions = joint_flow_matching_loss(
+    loss_flow, loss_action, pred_path, pred_actions = joint_flow_matching_loss(
         flow, z_path, actions
     )
+
+    if (
+        cfg.loss.feasibility.action_weight
+        or cfg.loss.feasibility.path_weight
+    ):
+        loss_feasible_action, loss_feasible_path = lewm_segment_feasibility_losses(
+            lewm,
+            pred_path,
+            pred_actions,
+        )
+    else:
+        loss_feasible_action = z_path.new_tensor(0.0)
+        loss_feasible_path = z_path.new_tensor(0.0)
 
     if cfg.loss.consistency.weight:
         if cfg.loss.consistency.detach_actions:
@@ -195,12 +210,20 @@ def step_batch(
         + cfg.loss.action.weight * loss_action
         + cfg.loss.consistency.weight * loss_dyn
         + cfg.loss.smoothness.weight * loss_smooth
+        + feasibility_scale
+        * (
+            cfg.loss.feasibility.action_weight * loss_feasible_action
+            + cfg.loss.feasibility.path_weight * loss_feasible_path
+        )
     )
     return {
         "loss": total,
         "flow_loss": loss_flow.detach(),
         "action_loss": loss_action.detach(),
         "consistency_loss": loss_dyn.detach(),
+        "feasibility_action_loss": loss_feasible_action.detach(),
+        "feasibility_path_loss": loss_feasible_path.detach(),
+        "feasibility_scale": z_path.new_tensor(feasibility_scale),
         "smoothness_loss": loss_smooth.detach(),
     }
 
@@ -280,6 +303,11 @@ def run(cfg: DictConfig):
                     flow=flow,
                     cfg=cfg,
                     device=device,
+                    feasibility_scale=min(
+                        1.0,
+                        (global_step + 1)
+                        / max(int(cfg.loss.feasibility.warmup_steps), 1),
+                    ),
                 )
                 optimizer.zero_grad(set_to_none=True)
                 out["loss"].backward()
