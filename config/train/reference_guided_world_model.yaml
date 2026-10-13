@@ -32,6 +32,9 @@ world:
   max_episode_steps: 50
   history_size: 1
   frame_skip: 1
+  # 0 keeps the original single-process SyncWorld. Positive values create
+  # persistent CPU rollout workers; each owns a shard of this batch.
+  rollout_workers: 8
 
 sampling:
   flow_steps: 16

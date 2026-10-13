@@ -2,6 +2,7 @@ import os
 os.environ.setdefault("MUJOCO_GL", "egl")
 
 from pathlib import Path
+import multiprocessing as mp
 import time
 import hydra
 import numpy as np
@@ -96,24 +97,168 @@ def scalar(value):
     return float(value.detach()) if torch.is_tensor(value) else float(value)
 
 
-def init_world_from_dataset(world, raw_dataset, episodes, starts, goal_offset):
-    episodes = np.asarray(episodes, dtype=np.int64)
-    starts = np.asarray(starts, dtype=np.int64)
-    chunks = raw_dataset.load_chunk(episodes, starts, starts + int(goal_offset))
+def restore_world_from_chunks(world, chunks):
+    """Reset vector environments, then restore each recorded simulator state."""
     seeds = []
     for chunk in chunks:
         seed = chunk.get("seed")
         seeds.append(None if seed is None else int(np.asarray(seed[0])))
-    world.reset(seed=seeds, options=[{} for _ in range(len(chunks))])
+    # SyncWorld accepts one options dict for all environments. Per-task
+    # variation is restored by its seed before the recorded state is applied.
+    world.reset(seed=seeds, options={})
     for env, chunk in zip(world.envs.unwrapped.envs, chunks):
         base = env.unwrapped
         if "state" not in chunk:
             raise KeyError("Real-rollout training requires a dataset state column.")
         base._set_state(np.asarray(chunk["state"][0]))
-        # PushT restores its goal from the expert seed. Other supported
-        # datasets may expose a goal_state column, in which case use it.
         if "goal_state" in chunk:
             base._set_goal_state(np.asarray(chunk["goal_state"][-1]))
+
+
+def init_world_from_dataset(world, raw_dataset, episodes, starts, goal_offset):
+    episodes = np.asarray(episodes, dtype=np.int64)
+    starts = np.asarray(starts, dtype=np.int64)
+    chunks = raw_dataset.load_chunk(episodes, starts, starts + int(goal_offset))
+    restore_world_from_chunks(world, chunks)
+
+
+def _rollout_worker_main(
+    worker_id,
+    task_queue,
+    result_queue,
+    dataset_kwargs,
+    world_kwargs,
+    image_shape,
+    action_block,
+):
+    """CPU-only persistent worker for one shard of synchronous vector envs."""
+    os.environ.setdefault("OMP_NUM_THREADS", "1")
+    os.environ.setdefault("MUJOCO_GL", "egl")
+
+    raw_dataset = swm.data.HDF5Dataset(**dataset_kwargs, transform=None)
+    world = None
+    world_size = None
+    try:
+        while True:
+            task = task_queue.get()
+            if task is None:
+                break
+            job_id, episodes, starts, env_actions, goal_offset = task
+            try:
+                shard_size, horizon = env_actions.shape[:2]
+                if world is None or world_size != shard_size:
+                    if world is not None:
+                        world.close()
+                    worker_world_cfg = dict(world_kwargs)
+                    worker_world_cfg["num_envs"] = int(shard_size)
+                    world = swm.World(**worker_world_cfg, image_shape=tuple(image_shape))
+                    world_size = shard_size
+
+                init_world_from_dataset(
+                    world, raw_dataset, episodes, starts, goal_offset
+                )
+                segment_frames = []
+                for segment in range(horizon):
+                    for inner in range(action_block):
+                        result = world.envs.step(env_actions[:, segment, inner])
+                        (
+                            world.states,
+                            world.rewards,
+                            world.terminateds,
+                            world.truncateds,
+                            world.infos,
+                        ) = result
+                        world.envs.unwrapped._autoreset_envs = np.zeros(
+                            (shard_size,), dtype=bool
+                        )
+                    segment_frames.append(np.asarray(world.infos["pixels"][:, -1]).copy())
+                result_queue.put((
+                    "ok",
+                    job_id,
+                    worker_id,
+                    np.stack(segment_frames, axis=1),
+                ))
+            except Exception as exc:
+                result_queue.put(("error", job_id, worker_id, repr(exc)))
+    finally:
+        if world is not None:
+            world.close()
+
+
+class SimulatorRolloutPool:
+    """Persistent CPU rollout pool; LeWM encoding remains in the GPU process."""
+
+    def __init__(
+        self,
+        *,
+        num_workers,
+        dataset_kwargs,
+        world_kwargs,
+        image_shape,
+        action_block,
+    ):
+        if num_workers < 1:
+            raise ValueError("num_workers must be positive")
+        self.num_workers = int(num_workers)
+        self._context = mp.get_context("spawn")
+        self._result_queue = self._context.Queue()
+        self._task_queues = [self._context.Queue(maxsize=1) for _ in range(num_workers)]
+        self._workers = []
+        for worker_id, task_queue in enumerate(self._task_queues):
+            process = self._context.Process(
+                target=_rollout_worker_main,
+                args=(
+                    worker_id,
+                    task_queue,
+                    self._result_queue,
+                    dataset_kwargs,
+                    world_kwargs,
+                    image_shape,
+                    action_block,
+                ),
+                daemon=True,
+            )
+            process.start()
+            self._workers.append(process)
+        self._job_id = 0
+
+    def rollout(self, episodes, starts, env_actions, goal_offset):
+        batch_size = int(env_actions.shape[0])
+        worker_count = min(self.num_workers, batch_size)
+        indices = np.array_split(np.arange(batch_size), worker_count)
+        job_id = self._job_id
+        self._job_id += 1
+        for worker_id, indices_for_worker in enumerate(indices):
+            self._task_queues[worker_id].put((
+                job_id,
+                np.asarray(episodes)[indices_for_worker],
+                np.asarray(starts)[indices_for_worker],
+                env_actions[indices_for_worker],
+                int(goal_offset),
+            ))
+
+        outputs = [None] * worker_count
+        for _ in range(worker_count):
+            status, received_job_id, worker_id, payload = self._result_queue.get()
+            if received_job_id != job_id:
+                raise RuntimeError(
+                    f"Rollout worker returned stale job {received_job_id}; expected {job_id}."
+                )
+            if status != "ok":
+                raise RuntimeError(f"Rollout worker {worker_id} failed: {payload}")
+            outputs[worker_id] = payload
+        return np.concatenate(outputs, axis=0)
+
+    def close(self):
+        for task_queue in self._task_queues:
+            task_queue.put(None)
+        for process in self._workers:
+            process.join(timeout=10)
+            if process.is_alive():
+                process.terminate()
+                process.join(timeout=5)
+
+
 
 
 @torch.no_grad()
@@ -131,23 +276,40 @@ def encode_world_pixels(runtime, world, transform, device):
 @torch.no_grad()
 def simulator_targets(
     runtime, world, raw_dataset, episodes, starts, reference_paths, actions,
-    *, goal_offset, image_tx, action_mean, action_std, device,
+    *, goal_offset, image_tx, action_mean, action_std, device, rollout_pool=None,
 ):
     batch, candidates, horizon, action_dim = actions.shape
     n = batch * candidates
-    init_world_from_dataset(
-        world, raw_dataset, np.repeat(episodes, candidates),
-        np.repeat(starts, candidates), goal_offset,
-    )
     base_dim = action_dim // runtime.action_block
     if base_dim * runtime.action_block != action_dim:
         raise ValueError("IDM action dimension must be divisible by action_block.")
     env_actions = actions.reshape(n, horizon, runtime.action_block, base_dim)
-    env_actions = env_actions * action_std + action_mean
+    env_actions = (env_actions * action_std + action_mean).detach().cpu().numpy()
+
+    if rollout_pool is not None:
+        frames = rollout_pool.rollout(
+            np.repeat(episodes, candidates),
+            np.repeat(starts, candidates),
+            env_actions,
+            goal_offset,
+        )
+        targets = []
+        for segment in range(horizon):
+            pixels = torch.as_tensor(frames[:, segment]).permute(0, 3, 1, 2)
+            embedding = runtime.encode_pixels(image_tx(pixels).to(device))
+            if embedding.ndim != 3 or embedding.size(1) != 1:
+                raise ValueError(
+                    f"Expected one encoded latent per world frame, got {tuple(embedding.shape)}."
+                )
+            targets.append(embedding[:, 0])
+        return torch.stack(targets, dim=1)
+
+    init_world_from_dataset(world, raw_dataset, np.repeat(episodes, candidates),
+                            np.repeat(starts, candidates), goal_offset)
     targets = []
     for segment in range(horizon):
         for inner in range(runtime.action_block):
-            result = world.envs.step(env_actions[:, segment, inner].detach().cpu().numpy())
+            result = world.envs.step(env_actions[:, segment, inner])
             world.states, world.rewards, world.terminateds, world.truncateds, world.infos = result
             world.envs.unwrapped._autoreset_envs = np.zeros((n,), dtype=bool)
         targets.append(encode_world_pixels(runtime, world, image_tx, device))
@@ -196,9 +358,21 @@ def run(cfg: DictConfig):
     action_data = action_data[~torch.isnan(action_data).any(dim=1)]
     action_mean, action_std = action_data.mean(0).to(device), action_data.std(0).clamp_min(1e-6).to(device)
     world_cfg = OmegaConf.to_container(cfg.world, resolve=True)
-    world_cfg["num_envs"] = cfg.loader.batch_size
+    rollout_workers = int(world_cfg.pop("rollout_workers", 0))
     world_cfg["max_episode_steps"] = max(world_cfg["max_episode_steps"], horizon * runtime.action_block)
-    world = swm.World(**world_cfg, image_shape=(224, 224))
+    rollout_pool = None
+    world = None
+    if rollout_workers > 0:
+        rollout_pool = SimulatorRolloutPool(
+            num_workers=rollout_workers,
+            dataset_kwargs=OmegaConf.to_container(cfg.data.dataset, resolve=True),
+            world_kwargs=world_cfg,
+            image_shape=(224, 224),
+            action_block=runtime.action_block,
+        )
+    else:
+        world_cfg["num_envs"] = cfg.loader.batch_size
+        world = swm.World(**world_cfg, image_shape=(224, 224))
     pixel_tx = image_transform(cfg.img_size)
     optimizer = torch.optim.AdamW(model.parameters(), lr=cfg.optimizer.lr, weight_decay=cfg.optimizer.weight_decay)
 
@@ -221,6 +395,7 @@ def run(cfg: DictConfig):
                     batch["_start_step"].numpy(), paths, actions,
                     goal_offset=horizon * runtime.action_block, image_tx=pixel_tx,
                     action_mean=action_mean, action_std=action_std, device=device,
+                    rollout_pool=rollout_pool,
                 )
             flat_paths = paths.reshape(-1, horizon + 1, paths.size(-1))
             flat_actions = actions.reshape(-1, horizon, actions.size(-1))
@@ -276,7 +451,10 @@ def run(cfg: DictConfig):
         print(f"epoch={epoch} checkpoint_done", flush=True)
     if wandb_run is not None:
         wandb_run.finish()
-    world.close()
+    if rollout_pool is not None:
+        rollout_pool.close()
+    if world is not None:
+        world.close()
 
 
 if __name__ == "__main__":
