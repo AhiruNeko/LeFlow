@@ -11,6 +11,7 @@ import numpy as np
 import stable_pretraining as spt
 import stable_worldmodel as swm
 import torch
+from tqdm.auto import tqdm
 from omegaconf import DictConfig, OmegaConf, open_dict
 from torchvision.transforms import v2 as transforms
 
@@ -435,6 +436,13 @@ def generate_rollout_cache(
         flush=True,
     )
     offset = 0
+    progress = tqdm(
+        total=count,
+        desc="cache_generation",
+        unit="clips",
+        dynamic_ncols=True,
+        leave=True,
+    )
     try:
         with h5py.File(temporary_path, "w") as file:
             chunk_size = min(int(cfg.rollout_cache.chunk_size), count)
@@ -509,12 +517,8 @@ def generate_rollout_cache(
                 file["episode_index"][offset:end] = batch["_episode_index"].numpy()
                 file["start_step"][offset:end] = batch["_start_step"].numpy()
                 offset = end
-                if batch_index % cfg.log_interval == 0 or offset == count:
-                    print(
-                        f"cache_generation records={offset}/{count} "
-                        f"batches={batch_index}",
-                        flush=True,
-                    )
+                progress.update(records)
+                progress.set_postfix(batches=batch_index, refresh=False)
             if offset != count:
                 raise RuntimeError(f"Cache wrote {offset} records; expected {count}.")
             file.attrs["complete"] = True
@@ -523,6 +527,8 @@ def generate_rollout_cache(
         if temporary_path.exists():
             temporary_path.unlink()
         raise
+    finally:
+        progress.close()
     print(f"cache_generation_done path={cache_path} records={count}", flush=True)
     return RolloutCacheDataset(cache_path)
 
