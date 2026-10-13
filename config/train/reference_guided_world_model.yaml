@@ -1,7 +1,10 @@
 defaults:
   - _self_
 
-planner_checkpoint: ???
+planner_checkpoint: null
+# Required only for rollout_cache.mode=use. It must match the LeWM used to
+# create the cache; planner and IDM are not loaded in cache-only training.
+lewm_checkpoint: null
 output_model_name: reference_guided_world_model
 subdir: reference_guided_world_model/${now:%Y-%m-%d_%H-%M-%S}
 seed: 42
@@ -48,3 +51,17 @@ wandb:
   project: leflow-dev
   entity: null
   mode: online
+
+rollout_cache:
+  # online: original on-policy rollout every update.
+  # generate: create the complete HDF5 cache once, then train from it.
+  # use: train directly from an existing cache; only LeWM + this model load.
+  mode: online
+  path: null
+  overwrite: false
+  # Independent reproducible seed for frozen planner/IDM/simulator collection.
+  # Saved in the finished HDF5 cache metadata.
+  collection_seed: 42
+  # If true, mode=generate exits after atomically writing the cache.
+  generate_only: false
+  chunk_size: 4096

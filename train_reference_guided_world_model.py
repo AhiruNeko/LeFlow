@@ -3,7 +3,9 @@ os.environ.setdefault("MUJOCO_GL", "egl")
 
 from pathlib import Path
 import multiprocessing as mp
+import random
 import time
+import h5py
 import hydra
 import numpy as np
 import stable_pretraining as spt
@@ -12,7 +14,7 @@ import torch
 from omegaconf import DictConfig, OmegaConf, open_dict
 from torchvision.transforms import v2 as transforms
 
-from latent_planner import LatentPlannerRuntime, stablewm_cache_dir
+from latent_planner import LatentPlannerRuntime, load_lewm, stablewm_cache_dir
 from reference_guided_world_model import (
     ReferenceGuidedWorldModel,
     continuous_lewm_predictions,
@@ -25,14 +27,77 @@ from utils import get_column_normalizer, get_img_preprocessor
 class IndexedDataset(torch.utils.data.Dataset):
     def __init__(self, dataset):
         self.dataset = dataset
+
     def __len__(self):
         return len(self.dataset)
+
     def __getitem__(self, index):
         item = self.dataset[index]
         episode, start = self.dataset.clip_indices[index]
         item["_episode_index"] = torch.tensor(episode)
         item["_start_step"] = torch.tensor(start)
         return item
+
+
+class RolloutCacheDataset(torch.utils.data.Dataset):
+    """Read-only HDF5 rollout cache with one record per source dataset clip."""
+
+    required_keys = ("reference_path", "actions", "executed_target")
+
+    def __init__(self, path):
+        self.path = str(Path(path).expanduser().resolve())
+        self._file = None
+        with h5py.File(self.path, "r") as file:
+            if not bool(file.attrs.get("complete", False)):
+                raise RuntimeError(f"Rollout cache is incomplete: {self.path}")
+            missing = [key for key in self.required_keys if key not in file]
+            if missing:
+                raise KeyError(f"Rollout cache misses datasets: {missing}")
+            self.length = int(file["reference_path"].shape[0])
+            self.metadata = {
+                key: file.attrs[key]
+                for key in file.attrs.keys()
+            }
+
+    def __len__(self):
+        return self.length
+
+    def __getstate__(self):
+        state = self.__dict__.copy()
+        state["_file"] = None
+        return state
+
+    def _get_file(self):
+        if self._file is None:
+            self._file = h5py.File(self.path, "r")
+        return self._file
+
+    def __getitem__(self, index):
+        file = self._get_file()
+        return {
+            "reference_path": torch.from_numpy(
+                np.asarray(file["reference_path"][index], dtype=np.float32)
+            ),
+            "actions": torch.from_numpy(
+                np.asarray(file["actions"][index], dtype=np.float32)
+            ),
+            "executed_target": torch.from_numpy(
+                np.asarray(file["executed_target"][index], dtype=np.float32)
+            ),
+        }
+
+
+def _decode_h5_attribute(value):
+    return value.decode() if isinstance(value, bytes) else value
+
+
+def rollout_cache_path(cfg):
+    if not cfg.rollout_cache.path:
+        raise ValueError("rollout_cache.path must be set for generate/use modes.")
+    path = Path(str(cfg.rollout_cache.path)).expanduser()
+    if path.suffix != ".h5":
+        raise ValueError("rollout_cache.path must end in .h5")
+    return path
 
 
 def image_transform(img_size):
@@ -58,12 +123,12 @@ def build_datasets(cfg):
     return raw, IndexedDataset(transformed)
 
 
-def make_loader(dataset, cfg, shuffle):
+def make_loader(dataset, cfg, shuffle, *, drop_last=True):
     num_workers = int(cfg.loader.num_workers)
     loader_kwargs = {
         "batch_size": cfg.loader.batch_size,
         "shuffle": shuffle,
-        "drop_last": True,
+        "drop_last": drop_last,
         "num_workers": num_workers,
         "pin_memory": bool(cfg.loader.pin_memory),
         "persistent_workers": bool(cfg.loader.persistent_workers) and num_workers > 0,
@@ -95,6 +160,18 @@ def init_wandb(cfg, run_dir):
 
 def scalar(value):
     return float(value.detach()) if torch.is_tensor(value) else float(value)
+
+
+def set_random_seed(seed):
+    """Seed every random source used by cache collection or model training."""
+    seed = int(seed)
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
+        torch.backends.cudnn.benchmark = False
+        torch.backends.cudnn.deterministic = True
 
 
 def restore_world_from_chunks(world, chunks):
@@ -316,145 +393,455 @@ def simulator_targets(
     return torch.stack(targets, dim=1)
 
 
-def checkpoint(model, runtime, cfg, path):
+@torch.no_grad()
+def generate_rollout_cache(
+    *,
+    cfg,
+    runtime,
+    raw_dataset,
+    source_dataset,
+    horizon,
+    action_mean,
+    action_std,
+    world,
+    rollout_pool,
+    pixel_tx,
+    device,
+):
+    """Generate exactly one frozen-planner rollout for every source clip."""
+    cache_path = rollout_cache_path(cfg)
+    if cache_path.exists() and not cfg.rollout_cache.overwrite:
+        raise FileExistsError(
+            f"Cache already exists: {cache_path}. Set rollout_cache.overwrite=true to replace it."
+        )
+    cache_path.parent.mkdir(parents=True, exist_ok=True)
+    temporary_path = cache_path.with_suffix(cache_path.suffix + ".tmp")
+    if temporary_path.exists():
+        temporary_path.unlink()
+
+    collection_loader = make_loader(
+        source_dataset, cfg, shuffle=False, drop_last=False
+    )
+    count = len(source_dataset)
+    latent_dim = int(runtime.flow.latent_dim)
+    action_dim = int(runtime.inverse_dynamics.action_dim)
+    model_max_horizon = int(runtime.flow.max_horizon)
+    planner_checkpoint = str(cfg.planner_checkpoint)
+    lewm_checkpoint = str(cfg.lewm_checkpoint or "")
+
+    print(
+        f"cache_generation_start path={cache_path} records={count} "
+        f"horizon={horizon} batch_size={cfg.loader.batch_size}",
+        flush=True,
+    )
+    offset = 0
+    try:
+        with h5py.File(temporary_path, "w") as file:
+            chunk_size = min(int(cfg.rollout_cache.chunk_size), count)
+            file.create_dataset(
+                "reference_path",
+                shape=(count, horizon + 1, latent_dim),
+                dtype=np.float16,
+                chunks=(chunk_size, horizon + 1, latent_dim),
+            )
+            file.create_dataset(
+                "actions",
+                shape=(count, horizon, action_dim),
+                dtype=np.float16,
+                chunks=(chunk_size, horizon, action_dim),
+            )
+            file.create_dataset(
+                "executed_target",
+                shape=(count, horizon, latent_dim),
+                dtype=np.float16,
+                chunks=(chunk_size, horizon, latent_dim),
+            )
+            file.create_dataset("episode_index", shape=(count,), dtype=np.int64)
+            file.create_dataset("start_step", shape=(count,), dtype=np.int64)
+            file.attrs["complete"] = False
+            file.attrs["format_version"] = 1
+            file.attrs["horizon"] = horizon
+            file.attrs["latent_dim"] = latent_dim
+            file.attrs["action_dim"] = action_dim
+            file.attrs["model_max_horizon"] = model_max_horizon
+            file.attrs["action_block"] = int(runtime.action_block)
+            file.attrs["planner_checkpoint"] = planner_checkpoint
+            file.attrs["lewm_checkpoint"] = lewm_checkpoint
+            file.attrs["collection_seed"] = int(cfg.rollout_cache.collection_seed)
+
+            for batch_index, batch in enumerate(collection_loader, start=1):
+                z_expert = runtime.encode_pixels(batch["pixels"].to(device))
+                z_start, z_goal = z_expert[:, 0], z_expert[:, -1]
+                paths = runtime.sample_paths(
+                    z_start,
+                    z_goal,
+                    horizon=horizon,
+                    num_samples=1,
+                    flow_steps=cfg.sampling.flow_steps,
+                )
+                actions = runtime.decode_actions(paths)
+                target = simulator_targets(
+                    runtime,
+                    world,
+                    raw_dataset,
+                    batch["_episode_index"].numpy(),
+                    batch["_start_step"].numpy(),
+                    paths,
+                    actions,
+                    goal_offset=horizon * runtime.action_block,
+                    image_tx=pixel_tx,
+                    action_mean=action_mean,
+                    action_std=action_std,
+                    device=device,
+                    rollout_pool=rollout_pool,
+                )
+                records = paths.size(0)
+                end = offset + records
+                file["reference_path"][offset:end] = (
+                    paths[:, 0].detach().cpu().to(torch.float16).numpy()
+                )
+                file["actions"][offset:end] = (
+                    actions[:, 0].detach().cpu().to(torch.float16).numpy()
+                )
+                file["executed_target"][offset:end] = (
+                    target.detach().cpu().to(torch.float16).numpy()
+                )
+                file["episode_index"][offset:end] = batch["_episode_index"].numpy()
+                file["start_step"][offset:end] = batch["_start_step"].numpy()
+                offset = end
+                if batch_index % cfg.log_interval == 0 or offset == count:
+                    print(
+                        f"cache_generation records={offset}/{count} "
+                        f"batches={batch_index}",
+                        flush=True,
+                    )
+            if offset != count:
+                raise RuntimeError(f"Cache wrote {offset} records; expected {count}.")
+            file.attrs["complete"] = True
+        os.replace(temporary_path, cache_path)
+    except Exception:
+        if temporary_path.exists():
+            temporary_path.unlink()
+        raise
+    print(f"cache_generation_done path={cache_path} records={count}", flush=True)
+    return RolloutCacheDataset(cache_path)
+
+
+def checkpoint(model, cfg, path, metadata):
     torch.save({
         "reference_guided_world_model_state_dict": model.state_dict(),
         "architecture": model.architecture.__dict__,
-        "planner_checkpoint": str(cfg.planner_checkpoint),
-        "planner_action_block": runtime.action_block,
+        "rollout_cache": metadata,
         "config": OmegaConf.to_container(cfg, resolve=True),
     }, path)
+
+
+def create_rollout_backend(cfg, horizon, action_block):
+    world_cfg = OmegaConf.to_container(cfg.world, resolve=True)
+    rollout_workers = int(world_cfg.pop("rollout_workers", 0))
+    world_cfg["max_episode_steps"] = max(
+        world_cfg["max_episode_steps"], horizon * action_block
+    )
+    if rollout_workers > 0:
+        pool = SimulatorRolloutPool(
+            num_workers=rollout_workers,
+            dataset_kwargs=OmegaConf.to_container(cfg.data.dataset, resolve=True),
+            world_kwargs=world_cfg,
+            image_shape=(224, 224),
+            action_block=action_block,
+        )
+        return None, pool
+
+    world_cfg["num_envs"] = cfg.loader.batch_size
+    return swm.World(**world_cfg, image_shape=(224, 224)), None
+
+
+def close_rollout_backend(world, rollout_pool):
+    if rollout_pool is not None:
+        rollout_pool.close()
+    if world is not None:
+        world.close()
+
+
+def load_cache_components(cfg, device):
+    cache_dataset = RolloutCacheDataset(rollout_cache_path(cfg))
+    metadata = {
+        key: _decode_h5_attribute(value)
+        for key, value in cache_dataset.metadata.items()
+    }
+    required = ("horizon", "latent_dim", "action_dim", "model_max_horizon")
+    missing = [key for key in required if key not in metadata]
+    if missing:
+        raise KeyError(f"Rollout cache misses metadata: {missing}")
+
+    lewm_checkpoint = str(cfg.lewm_checkpoint or metadata.get("lewm_checkpoint", ""))
+    if not lewm_checkpoint:
+        raise ValueError(
+            "Cache-only training requires lewm_checkpoint, either in config "
+            "or in the cache metadata."
+        )
+    lewm = load_lewm(lewm_checkpoint).to(device).eval()
+    lewm.requires_grad_(False)
+    model = ReferenceGuidedWorldModel(
+        latent_dim=int(metadata["latent_dim"]),
+        action_dim=int(metadata["action_dim"]),
+        max_horizon=int(metadata["model_max_horizon"]),
+    ).to(device)
+    return model, lewm, cache_dataset, metadata
 
 
 @hydra.main(version_base=None, config_path="./config/train", config_name="reference_guided_world_model")
 def run(cfg: DictConfig):
     device = torch.device(cfg.device if torch.cuda.is_available() else "cpu")
-    torch.manual_seed(cfg.seed)
-    model, runtime = ReferenceGuidedWorldModel.from_planner_checkpoint(
-        cfg.planner_checkpoint, device=device
-    )
-    runtime.eval().requires_grad_(False)
-    payload = torch.load(cfg.planner_checkpoint, map_location="cpu", weights_only=False)
-    planner_cfg = payload.get("config", {}).get("planner", {})
-    if "horizon" not in planner_cfg:
-        raise KeyError("Planner checkpoint has no config.planner.horizon metadata.")
-    horizon = int(planner_cfg["horizon"])
-    if horizon > model.architecture.max_horizon:
-        raise ValueError("Planner training horizon exceeds checkpoint max_horizon.")
-    # Mirror original planner clip construction from checkpoint metadata.
-    with open_dict(cfg):
-        cfg.data.dataset.frameskip = int(runtime.action_block)
-        cfg.data.dataset.num_steps = horizon + 1
+    set_random_seed(cfg.seed)
+    cache_mode = str(cfg.rollout_cache.mode).lower()
+    if cache_mode not in {"online", "generate", "use"}:
+        raise ValueError("rollout_cache.mode must be one of: online, generate, use")
 
-    raw_dataset, dataset = build_datasets(cfg)
-    train_size = int(len(dataset) * cfg.train_split)
-    train_set, val_set = torch.utils.data.random_split(
-        dataset, [train_size, len(dataset) - train_size],
-        generator=torch.Generator().manual_seed(cfg.seed),
-    )
-    train_loader, val_loader = make_loader(train_set, cfg, True), make_loader(val_set, cfg, False)
-
-    action_data = torch.as_tensor(raw_dataset.get_col_data("action"), dtype=torch.float32)
-    action_data = action_data[~torch.isnan(action_data).any(dim=1)]
-    action_mean, action_std = action_data.mean(0).to(device), action_data.std(0).clamp_min(1e-6).to(device)
-    world_cfg = OmegaConf.to_container(cfg.world, resolve=True)
-    rollout_workers = int(world_cfg.pop("rollout_workers", 0))
-    world_cfg["max_episode_steps"] = max(world_cfg["max_episode_steps"], horizon * runtime.action_block)
-    rollout_pool = None
+    runtime = None
+    raw_dataset = None
+    source_dataset = None
     world = None
-    if rollout_workers > 0:
-        rollout_pool = SimulatorRolloutPool(
-            num_workers=rollout_workers,
-            dataset_kwargs=OmegaConf.to_container(cfg.data.dataset, resolve=True),
-            world_kwargs=world_cfg,
-            image_shape=(224, 224),
-            action_block=runtime.action_block,
+    rollout_pool = None
+    cache_metadata = {"mode": cache_mode}
+
+    if cache_mode == "use":
+        model, lewm, training_dataset, cache_metadata = load_cache_components(cfg, device)
+        horizon = int(cache_metadata["horizon"])
+        if horizon > model.architecture.max_horizon:
+            raise ValueError("Cache horizon exceeds model maximum horizon.")
+        online_training = False
+        print(
+            f"cache_training_start path={rollout_cache_path(cfg)} "
+            f"records={len(training_dataset)} horizon={horizon}",
+            flush=True,
         )
     else:
-        world_cfg["num_envs"] = cfg.loader.batch_size
-        world = swm.World(**world_cfg, image_shape=(224, 224))
-    pixel_tx = image_transform(cfg.img_size)
-    optimizer = torch.optim.AdamW(model.parameters(), lr=cfg.optimizer.lr, weight_decay=cfg.optimizer.weight_decay)
+        if not cfg.planner_checkpoint:
+            raise ValueError(
+                "planner_checkpoint is required for rollout_cache.mode=online/generate."
+            )
+        model, runtime = ReferenceGuidedWorldModel.from_planner_checkpoint(
+            cfg.planner_checkpoint, device=device
+        )
+        runtime.eval().requires_grad_(False)
+        lewm = runtime.lewm
+        payload = torch.load(
+            cfg.planner_checkpoint, map_location="cpu", weights_only=False
+        )
+        planner_cfg = payload.get("config", {}).get("planner", {})
+        if "horizon" not in planner_cfg:
+            raise KeyError("Planner checkpoint has no config.planner.horizon metadata.")
+        horizon = int(planner_cfg["horizon"])
+        if horizon > model.architecture.max_horizon:
+            raise ValueError("Planner training horizon exceeds checkpoint max_horizon.")
+        with open_dict(cfg):
+            cfg.data.dataset.frameskip = int(runtime.action_block)
+            cfg.data.dataset.num_steps = horizon + 1
 
+        raw_dataset, source_dataset = build_datasets(cfg)
+        if cache_mode == "generate":
+            # Cache collection is controlled independently from the optimizer.
+            set_random_seed(cfg.rollout_cache.collection_seed)
+
+            action_data = torch.as_tensor(
+                raw_dataset.get_col_data("action"), dtype=torch.float32
+            )
+            action_data = action_data[~torch.isnan(action_data).any(dim=1)]
+            action_mean = action_data.mean(0).to(device)
+            action_std = action_data.std(0).clamp_min(1e-6).to(device)
+            world, rollout_pool = create_rollout_backend(
+                cfg, horizon, runtime.action_block
+            )
+            training_dataset = generate_rollout_cache(
+                cfg=cfg,
+                runtime=runtime,
+                raw_dataset=raw_dataset,
+                source_dataset=source_dataset,
+                horizon=horizon,
+                action_mean=action_mean,
+                action_std=action_std,
+                world=world,
+                rollout_pool=rollout_pool,
+                pixel_tx=image_transform(cfg.img_size),
+                device=device,
+            )
+            close_rollout_backend(world, rollout_pool)
+            world, rollout_pool = None, None
+            if cfg.rollout_cache.generate_only:
+                print("cache_generation_only_complete", flush=True)
+                return
+            # Do not let collection perturb the requested training RNG state.
+            set_random_seed(cfg.seed)
+            cache_metadata = {
+                key: _decode_h5_attribute(value)
+                for key, value in training_dataset.metadata.items()
+            }
+            # Planner and IDM are no longer needed after cache generation.
+            lewm = runtime.lewm
+            del runtime
+            runtime = None
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+            online_training = False
+        else:
+            action_data = torch.as_tensor(
+                raw_dataset.get_col_data("action"), dtype=torch.float32
+            )
+            action_data = action_data[~torch.isnan(action_data).any(dim=1)]
+            action_mean = action_data.mean(0).to(device)
+            action_std = action_data.std(0).clamp_min(1e-6).to(device)
+            pixel_tx = image_transform(cfg.img_size)
+            training_dataset = source_dataset
+            world, rollout_pool = create_rollout_backend(
+                cfg, horizon, runtime.action_block
+            )
+            cache_metadata = {
+                "mode": "online",
+                "horizon": horizon,
+                "planner_checkpoint": str(cfg.planner_checkpoint),
+            }
+            online_training = True
+
+    train_size = int(len(training_dataset) * cfg.train_split)
+    train_set, _ = torch.utils.data.random_split(
+        training_dataset,
+        [train_size, len(training_dataset) - train_size],
+        generator=torch.Generator().manual_seed(cfg.seed),
+    )
+    train_loader = make_loader(train_set, cfg, True)
+    total_steps = len(train_loader) * int(cfg.epochs)
+    print(
+        f"training_schedule batches_per_epoch={len(train_loader)} "
+        f"epochs={cfg.epochs} total_steps={total_steps} source={cache_mode}",
+        flush=True,
+    )
+
+    optimizer = torch.optim.AdamW(
+        model.parameters(),
+        lr=cfg.optimizer.lr,
+        weight_decay=cfg.optimizer.weight_decay,
+    )
     run_dir = Path(stablewm_cache_dir(sub_folder="checkpoints"), cfg.subdir)
     run_dir.mkdir(parents=True, exist_ok=True)
     OmegaConf.save(cfg, run_dir / "reference_guided_world_model_config.yaml")
     wandb_run = init_wandb(cfg, run_dir)
+
     global_step = 0
-    for epoch in range(1, cfg.epochs + 1):
-        model.train()
-        for batch_index, batch in enumerate(train_loader):
-            with torch.no_grad():
-                z_expert = runtime.encode_pixels(batch["pixels"].to(device))
-                z_start, z_goal = z_expert[:, 0], z_expert[:, -1]
-                paths = runtime.sample_paths(z_start, z_goal, horizon=horizon,
-                    num_samples=1, flow_steps=cfg.sampling.flow_steps)
-                actions = runtime.decode_actions(paths)
-                target = simulator_targets(
-                    runtime, world, raw_dataset, batch["_episode_index"].numpy(),
-                    batch["_start_step"].numpy(), paths, actions,
-                    goal_offset=horizon * runtime.action_block, image_tx=pixel_tx,
-                    action_mean=action_mean, action_std=action_std, device=device,
-                    rollout_pool=rollout_pool,
+    try:
+        for epoch in range(1, cfg.epochs + 1):
+            model.train()
+            for batch_index, batch in enumerate(train_loader):
+                if online_training:
+                    with torch.no_grad():
+                        z_expert = runtime.encode_pixels(batch["pixels"].to(device))
+                        z_start, z_goal = z_expert[:, 0], z_expert[:, -1]
+                        paths = runtime.sample_paths(
+                            z_start,
+                            z_goal,
+                            horizon=horizon,
+                            num_samples=1,
+                            flow_steps=cfg.sampling.flow_steps,
+                        )
+                        actions = runtime.decode_actions(paths)
+                        target = simulator_targets(
+                            runtime,
+                            world,
+                            raw_dataset,
+                            batch["_episode_index"].numpy(),
+                            batch["_start_step"].numpy(),
+                            paths,
+                            actions,
+                            goal_offset=horizon * runtime.action_block,
+                            image_tx=pixel_tx,
+                            action_mean=action_mean,
+                            action_std=action_std,
+                            device=device,
+                            rollout_pool=rollout_pool,
+                        )
+                    flat_paths = paths[:, 0]
+                    flat_actions = actions[:, 0]
+                else:
+                    flat_paths = batch["reference_path"].to(device, non_blocking=True)
+                    flat_actions = batch["actions"].to(device, non_blocking=True)
+                    target = batch["executed_target"].to(device, non_blocking=True)
+
+                out = reference_guided_training_step(
+                    model, lewm, flat_paths, flat_actions, target
                 )
-            flat_paths = paths.reshape(-1, horizon + 1, paths.size(-1))
-            flat_actions = actions.reshape(-1, horizon, actions.size(-1))
-            out = reference_guided_training_step(model, runtime.lewm, flat_paths, flat_actions, target)
-            optimizer.zero_grad(set_to_none=True)
-            out["loss"].backward()
-            grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), cfg.grad_clip_norm)
-            optimizer.step()
-            global_step += 1
-            metrics = {
-                "train/loss": scalar(out["loss"]),
-                "train/grad_norm": scalar(grad_norm),
-                "train/epoch": epoch,
-            }
-            if global_step % cfg.log_interval == 0:
-                with torch.no_grad():
-                    lewm_continuous = continuous_lewm_predictions(
-                        runtime.lewm, flat_paths, flat_actions
-                    )
-                    lewm_continuous_mse = continuous_trajectory_loss(lewm_continuous, target)
-                    model_final_mse = continuous_trajectory_loss(
-                        out["trajectory"][:, -1:], target[:, -1:]
-                    )
-                    lewm_continuous_final_mse = continuous_trajectory_loss(
-                        lewm_continuous[:, -1:], target[:, -1:]
-                    )
-                metrics.update({
-                    "diagnostic/lewm_continuous_mse": scalar(lewm_continuous_mse),
-                    "diagnostic/model_to_lewm_ratio": scalar(
-                        out["loss"].detach() / lewm_continuous_mse.clamp_min(1e-8)
-                    ),
-                    "diagnostic/model_advantage_over_lewm": scalar(
-                        lewm_continuous_mse - out["loss"].detach()
-                    ),
-                    "diagnostic/model_final_mse": scalar(model_final_mse),
-                    "diagnostic/lewm_continuous_final_mse": scalar(lewm_continuous_final_mse),
-                    "diagnostic/model_final_advantage_over_lewm": scalar(
-                        lewm_continuous_final_mse - model_final_mse
-                    ),
-                })
-                print(
-                    f"epoch={epoch} step={global_step} loss={scalar(out['loss']):.6f} "
-                    f"lewm_continuous_mse={scalar(lewm_continuous_mse):.6f} "
-                    f"grad_norm={scalar(grad_norm):.4f}",
-                    flush=True,
+                optimizer.zero_grad(set_to_none=True)
+                out["loss"].backward()
+                grad_norm = torch.nn.utils.clip_grad_norm_(
+                    model.parameters(), cfg.grad_clip_norm
                 )
-            if wandb_run is not None:
-                wandb_run.log(metrics, step=global_step)
-            if cfg.max_train_batches and batch_index + 1 >= cfg.max_train_batches:
-                break
-        checkpoint(model, runtime, cfg, run_dir / f"{cfg.output_model_name}_epoch_{epoch}.pt")
-        checkpoint(model, runtime, cfg, run_dir / f"{cfg.output_model_name}.pt")
-        print(f"epoch={epoch} checkpoint_done", flush=True)
-    if wandb_run is not None:
-        wandb_run.finish()
-    if rollout_pool is not None:
-        rollout_pool.close()
-    if world is not None:
-        world.close()
+                optimizer.step()
+                global_step += 1
+
+                metrics = {
+                    "train/loss": scalar(out["loss"]),
+                    "train/grad_norm": scalar(grad_norm),
+                    "train/epoch": epoch,
+                }
+                if global_step % cfg.log_interval == 0:
+                    with torch.no_grad():
+                        lewm_continuous = continuous_lewm_predictions(
+                            lewm, flat_paths, flat_actions
+                        )
+                        lewm_continuous_mse = continuous_trajectory_loss(
+                            lewm_continuous, target
+                        )
+                        model_final_mse = continuous_trajectory_loss(
+                            out["trajectory"][:, -1:], target[:, -1:]
+                        )
+                        lewm_continuous_final_mse = continuous_trajectory_loss(
+                            lewm_continuous[:, -1:], target[:, -1:]
+                        )
+                    metrics.update({
+                        "diagnostic/lewm_continuous_mse": scalar(lewm_continuous_mse),
+                        "diagnostic/model_to_lewm_ratio": scalar(
+                            out["loss"].detach()
+                            / lewm_continuous_mse.clamp_min(1e-8)
+                        ),
+                        "diagnostic/model_advantage_over_lewm": scalar(
+                            lewm_continuous_mse - out["loss"].detach()
+                        ),
+                        "diagnostic/model_final_mse": scalar(model_final_mse),
+                        "diagnostic/lewm_continuous_final_mse": scalar(
+                            lewm_continuous_final_mse
+                        ),
+                        "diagnostic/model_final_advantage_over_lewm": scalar(
+                            lewm_continuous_final_mse - model_final_mse
+                        ),
+                    })
+                    print(
+                        f"epoch={epoch} step={global_step} "
+                        f"loss={scalar(out['loss']):.6f} "
+                        f"lewm_continuous_mse={scalar(lewm_continuous_mse):.6f} "
+                        f"grad_norm={scalar(grad_norm):.4f}",
+                        flush=True,
+                    )
+                if wandb_run is not None:
+                    wandb_run.log(metrics, step=global_step)
+                if cfg.max_train_batches and batch_index + 1 >= cfg.max_train_batches:
+                    break
+
+            checkpoint(
+                model,
+                cfg,
+                run_dir / f"{cfg.output_model_name}_epoch_{epoch}.pt",
+                cache_metadata,
+            )
+            checkpoint(
+                model,
+                cfg,
+                run_dir / f"{cfg.output_model_name}.pt",
+                cache_metadata,
+            )
+            print(f"epoch={epoch} checkpoint_done", flush=True)
+    finally:
+        if wandb_run is not None:
+            wandb_run.finish()
+        close_rollout_backend(world, rollout_pool)
 
 
 if __name__ == "__main__":
