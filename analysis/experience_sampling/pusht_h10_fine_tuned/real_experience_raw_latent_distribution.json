@@ -1,0 +1,281 @@
+{
+  "description": "One fixed start/goal per task. Every visible point is a raw latent trajectory generated during a candidates-times-rounds FIFO loop.",
+  "memory_source": "autoregressive_real_flow_samples_only",
+  "visualization_representation": "flattened intermediate raw latent states; start and goal omitted because they are fixed within each task",
+  "checkpoints": {
+    "planner": "/root/projects/pusht/latent_planner_finetune/pusht_h10_phase2/fine_tuned_latent_planner.pt",
+    "trajectory_encoder": "/root/projects/pusht/latent_planner_finetune/pusht_h10_phase2/fine_tuned_latent_planner_trajectory_encoder.pt",
+    "cost_model": "/root/projects/pusht/latent_planner_finetune/pusht_h10_phase2/fine_tuned_latent_planner_cost_model.pt"
+  },
+  "dataset": "pusht_expert_train",
+  "seed": 42,
+  "horizon": 10,
+  "action_block": 5,
+  "flow_steps": 16,
+  "num_tasks": 8,
+  "candidates_per_round": 4,
+  "rounds": 17,
+  "experience_max_size": 64,
+  "memory_sizes": [
+    0,
+    4,
+    16,
+    64
+  ],
+  "raw_latent_pca_explained_variance": [
+    0.1602829396724701,
+    0.14601008594036102,
+    0.1212746649980545
+  ],
+  "task_centered_raw_latent_pca_explained_variance": [
+    0.11058451235294342,
+    0.09373282641172409,
+    0.06468187272548676
+  ],
+  "per_task": {
+    "0": {
+      "0": {
+        "predicted_cost_mean": -0.28070056438446045,
+        "predicted_cost_std": 0.006470309104770422,
+        "within_raw_latent_rms": 3.481458902359009,
+        "raw_latent_centroid_l2_to_memory_0": 0.0,
+        "generated_round": 1
+      },
+      "4": {
+        "predicted_cost_mean": -0.2803961932659149,
+        "predicted_cost_std": 0.002210225211456418,
+        "within_raw_latent_rms": 3.290034294128418,
+        "raw_latent_centroid_l2_to_memory_0": 3.3085126876831055,
+        "generated_round": 2
+      },
+      "16": {
+        "predicted_cost_mean": -0.279244601726532,
+        "predicted_cost_std": 0.0023879266809672117,
+        "within_raw_latent_rms": 3.5423619747161865,
+        "raw_latent_centroid_l2_to_memory_0": 3.054760456085205,
+        "generated_round": 5
+      },
+      "64": {
+        "predicted_cost_mean": -0.2808011472225189,
+        "predicted_cost_std": 0.003298212541267276,
+        "within_raw_latent_rms": 3.314164400100708,
+        "raw_latent_centroid_l2_to_memory_0": 2.8895106315612793,
+        "generated_round": 17
+      }
+    },
+    "1": {
+      "0": {
+        "predicted_cost_mean": -0.3154817223548889,
+        "predicted_cost_std": 0.003837164957076311,
+        "within_raw_latent_rms": 5.54692268371582,
+        "raw_latent_centroid_l2_to_memory_0": 0.0,
+        "generated_round": 1
+      },
+      "4": {
+        "predicted_cost_mean": -0.3194173574447632,
+        "predicted_cost_std": 0.012198098935186863,
+        "within_raw_latent_rms": 5.911798477172852,
+        "raw_latent_centroid_l2_to_memory_0": 4.157024383544922,
+        "generated_round": 2
+      },
+      "16": {
+        "predicted_cost_mean": -0.3093791604042053,
+        "predicted_cost_std": 0.0060163927264511585,
+        "within_raw_latent_rms": 5.655623912811279,
+        "raw_latent_centroid_l2_to_memory_0": 5.9397711753845215,
+        "generated_round": 5
+      },
+      "64": {
+        "predicted_cost_mean": -0.32411491870880127,
+        "predicted_cost_std": 0.007238901220262051,
+        "within_raw_latent_rms": 5.616791725158691,
+        "raw_latent_centroid_l2_to_memory_0": 4.167710781097412,
+        "generated_round": 17
+      }
+    },
+    "2": {
+      "0": {
+        "predicted_cost_mean": -0.351665198802948,
+        "predicted_cost_std": 0.0027048757765442133,
+        "within_raw_latent_rms": 11.415831565856934,
+        "raw_latent_centroid_l2_to_memory_0": 0.0,
+        "generated_round": 1
+      },
+      "4": {
+        "predicted_cost_mean": -0.3536968231201172,
+        "predicted_cost_std": 0.0034375032410025597,
+        "within_raw_latent_rms": 9.47920036315918,
+        "raw_latent_centroid_l2_to_memory_0": 9.131354331970215,
+        "generated_round": 2
+      },
+      "16": {
+        "predicted_cost_mean": -0.3557804822921753,
+        "predicted_cost_std": 0.006078639067709446,
+        "within_raw_latent_rms": 11.102035522460938,
+        "raw_latent_centroid_l2_to_memory_0": 7.295145511627197,
+        "generated_round": 5
+      },
+      "64": {
+        "predicted_cost_mean": -0.35247018933296204,
+        "predicted_cost_std": 0.002499045105651021,
+        "within_raw_latent_rms": 9.388679504394531,
+        "raw_latent_centroid_l2_to_memory_0": 9.821836471557617,
+        "generated_round": 17
+      }
+    },
+    "3": {
+      "0": {
+        "predicted_cost_mean": -0.29650601744651794,
+        "predicted_cost_std": 0.004496829118579626,
+        "within_raw_latent_rms": 3.788618564605713,
+        "raw_latent_centroid_l2_to_memory_0": 0.0,
+        "generated_round": 1
+      },
+      "4": {
+        "predicted_cost_mean": -0.30095672607421875,
+        "predicted_cost_std": 0.00404569786041975,
+        "within_raw_latent_rms": 2.916069746017456,
+        "raw_latent_centroid_l2_to_memory_0": 3.061469316482544,
+        "generated_round": 2
+      },
+      "16": {
+        "predicted_cost_mean": -0.2969225347042084,
+        "predicted_cost_std": 0.0037665211129933596,
+        "within_raw_latent_rms": 3.190235137939453,
+        "raw_latent_centroid_l2_to_memory_0": 2.24113392829895,
+        "generated_round": 5
+      },
+      "64": {
+        "predicted_cost_mean": -0.2985388934612274,
+        "predicted_cost_std": 0.002269006334245205,
+        "within_raw_latent_rms": 4.538606643676758,
+        "raw_latent_centroid_l2_to_memory_0": 3.4785690307617188,
+        "generated_round": 17
+      }
+    },
+    "4": {
+      "0": {
+        "predicted_cost_mean": -0.32544445991516113,
+        "predicted_cost_std": 0.0020484523847699165,
+        "within_raw_latent_rms": 3.3593015670776367,
+        "raw_latent_centroid_l2_to_memory_0": 0.0,
+        "generated_round": 1
+      },
+      "4": {
+        "predicted_cost_mean": -0.3263688385486603,
+        "predicted_cost_std": 0.0041827005334198475,
+        "within_raw_latent_rms": 3.1890485286712646,
+        "raw_latent_centroid_l2_to_memory_0": 4.07861852645874,
+        "generated_round": 2
+      },
+      "16": {
+        "predicted_cost_mean": -0.32050639390945435,
+        "predicted_cost_std": 0.0032832170836627483,
+        "within_raw_latent_rms": 3.3278841972351074,
+        "raw_latent_centroid_l2_to_memory_0": 2.6212563514709473,
+        "generated_round": 5
+      },
+      "64": {
+        "predicted_cost_mean": -0.32961902022361755,
+        "predicted_cost_std": 0.004399632569402456,
+        "within_raw_latent_rms": 3.072094440460205,
+        "raw_latent_centroid_l2_to_memory_0": 3.0309760570526123,
+        "generated_round": 17
+      }
+    },
+    "5": {
+      "0": {
+        "predicted_cost_mean": -0.24188710749149323,
+        "predicted_cost_std": 0.009961009956896305,
+        "within_raw_latent_rms": 7.207942008972168,
+        "raw_latent_centroid_l2_to_memory_0": 0.0,
+        "generated_round": 1
+      },
+      "4": {
+        "predicted_cost_mean": -0.2420799434185028,
+        "predicted_cost_std": 0.012623011134564877,
+        "within_raw_latent_rms": 6.58965539932251,
+        "raw_latent_centroid_l2_to_memory_0": 7.515830039978027,
+        "generated_round": 2
+      },
+      "16": {
+        "predicted_cost_mean": -0.24375681579113007,
+        "predicted_cost_std": 0.01353558897972107,
+        "within_raw_latent_rms": 5.021294593811035,
+        "raw_latent_centroid_l2_to_memory_0": 3.4471495151519775,
+        "generated_round": 5
+      },
+      "64": {
+        "predicted_cost_mean": -0.23201259970664978,
+        "predicted_cost_std": 0.015827393159270287,
+        "within_raw_latent_rms": 6.911625862121582,
+        "raw_latent_centroid_l2_to_memory_0": 5.1537370681762695,
+        "generated_round": 17
+      }
+    },
+    "6": {
+      "0": {
+        "predicted_cost_mean": -0.2981629967689514,
+        "predicted_cost_std": 0.005925669800490141,
+        "within_raw_latent_rms": 8.340625762939453,
+        "raw_latent_centroid_l2_to_memory_0": 0.0,
+        "generated_round": 1
+      },
+      "4": {
+        "predicted_cost_mean": -0.2866106927394867,
+        "predicted_cost_std": 0.004655282013118267,
+        "within_raw_latent_rms": 9.616104125976562,
+        "raw_latent_centroid_l2_to_memory_0": 6.626102447509766,
+        "generated_round": 2
+      },
+      "16": {
+        "predicted_cost_mean": -0.29781511425971985,
+        "predicted_cost_std": 0.005188268143683672,
+        "within_raw_latent_rms": 8.586106300354004,
+        "raw_latent_centroid_l2_to_memory_0": 6.288390159606934,
+        "generated_round": 5
+      },
+      "64": {
+        "predicted_cost_mean": -0.294344425201416,
+        "predicted_cost_std": 0.004108256660401821,
+        "within_raw_latent_rms": 11.383047103881836,
+        "raw_latent_centroid_l2_to_memory_0": 11.411340713500977,
+        "generated_round": 17
+      }
+    },
+    "7": {
+      "0": {
+        "predicted_cost_mean": -0.30980026721954346,
+        "predicted_cost_std": 0.012449626810848713,
+        "within_raw_latent_rms": 9.151366233825684,
+        "raw_latent_centroid_l2_to_memory_0": 0.0,
+        "generated_round": 1
+      },
+      "4": {
+        "predicted_cost_mean": -0.32366546988487244,
+        "predicted_cost_std": 0.026285607367753983,
+        "within_raw_latent_rms": 9.586892127990723,
+        "raw_latent_centroid_l2_to_memory_0": 6.215473651885986,
+        "generated_round": 2
+      },
+      "16": {
+        "predicted_cost_mean": -0.3208667039871216,
+        "predicted_cost_std": 0.022349469363689423,
+        "within_raw_latent_rms": 8.703831672668457,
+        "raw_latent_centroid_l2_to_memory_0": 5.089534282684326,
+        "generated_round": 5
+      },
+      "64": {
+        "predicted_cost_mean": -0.31980472803115845,
+        "predicted_cost_std": 0.024931952357292175,
+        "within_raw_latent_rms": 8.05312728881836,
+        "raw_latent_centroid_l2_to_memory_0": 6.343129634857178,
+        "generated_round": 17
+      }
+    }
+  },
+  "artifacts": {
+    "raw_latent_pca_csv": "/root/projects/LeFlow/analysis/experience_sampling/pusht_h10_fine_tuned/real_experience_raw_latent_distribution_raw_latent_pca.csv",
+    "raw_latent_pca_by_task_png": "/root/projects/LeFlow/analysis/experience_sampling/pusht_h10_fine_tuned/real_experience_raw_latent_distribution_raw_latent_pca_by_task.png"
+  }
+}
