@@ -75,7 +75,7 @@ def load_heldout_episodes(cfg: DictConfig) -> set[int] | None:
 
 @hydra.main(version_base=None, config_path="./config/eval", config_name="pusht")
 def run(cfg: DictConfig):
-    """Evaluate a random policy or the joint latent path--action planner."""
+    """Evaluate a random policy or the current joint path--action flow model."""
     assert (
         cfg.plan_config.horizon * cfg.plan_config.action_block <= cfg.eval.eval_budget
     ), "Planning horizon must be smaller than or equal to eval_budget"
@@ -118,6 +118,8 @@ def run(cfg: DictConfig):
         joint_action_dim = None
         is_joint_latent_flow = solver_target == "latent_planner.LearnedLatentPathSolver"
         if is_joint_latent_flow:
+            # LatentPlannerRuntime reconstructs the current coupled path/action
+            # architecture directly from the checkpoint architecture metadata.
             solver = hydra.utils.instantiate(cfg.solver)
             # A single joint ODE produces aligned latent route interiors and
             # action blocks. Evaluation must not fall back to a separate IDM.
@@ -148,7 +150,7 @@ def run(cfg: DictConfig):
                 else "lewm"
             )
             print(
-                "latent planner mode=joint_path_action "
+                "latent planner mode=coupled_joint_path_action "
                 f"action_dim={joint_action_dim} world_model={world_model_type}",
                 flush=True,
             )

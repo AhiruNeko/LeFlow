@@ -7,8 +7,9 @@ set -euo pipefail
 export STABLEWM_HOME="${STABLEWM_HOME:-/root/projects/pusht}"
 export HYDRA_FULL_ERROR=1
 
-POLICY="${POLICY:-global_path_local_action_flow/pusht_h5_ep10/global_path_local_action_flow.pt}"
-WORLD_MODEL_CHECKPOINT="${WORLD_MODEL_CHECKPOINT:-/root/projects/pusht/fast-lewm/pusht/Fast-lewm_pusht_object.ckpt}"
+POLICY="${POLICY:-global_path_local_action_flow/pusht_h5_ep10_lewm_v0.6/global_path_local_action_flow.pt}"
+WORLD_MODEL_TYPE="${WORLD_MODEL_TYPE:-lewm}"
+WORLD_MODEL_CHECKPOINT="${WORLD_MODEL_CHECKPOINT:-/root/projects/pusht/pusht}"
 HORIZON="${HORIZON:-5}"
 RECEDING_HORIZON="${RECEDING_HORIZON:-5}"
 ACTION_BLOCK="${ACTION_BLOCK:-5}"
@@ -30,6 +31,7 @@ fi
 
 echo "== LeFlow terminal-only multi-seed evaluation =="
 echo "policy=$POLICY"
+echo "world_model_type=$WORLD_MODEL_TYPE"
 echo "world_model_checkpoint=$WORLD_MODEL_CHECKPOINT"
 echo "seeds=${SEEDS[*]}"
 echo "horizon=$HORIZON receding_horizon=$RECEDING_HORIZON action_block=$ACTION_BLOCK"
@@ -43,6 +45,7 @@ for seed in "${SEEDS[@]}"; do
     conda run -n lewm --no-capture-output python eval.py --config-name=pusht.yaml \
       solver=latent_flow \
       policy="$POLICY" \
+      solver.world_model_type="$WORLD_MODEL_TYPE" \
       solver.world_model_checkpoint="$WORLD_MODEL_CHECKPOINT" \
       plan_config.horizon="$HORIZON" \
       plan_config.receding_horizon="$RECEDING_HORIZON" \
