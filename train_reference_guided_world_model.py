@@ -14,6 +14,8 @@ from torchvision.transforms import v2 as transforms
 from latent_planner import LatentPlannerRuntime, stablewm_cache_dir
 from reference_guided_world_model import (
     ReferenceGuidedWorldModel,
+    continuous_lewm_predictions,
+    continuous_trajectory_loss,
     reference_guided_training_step,
 )
 from utils import get_column_normalizer, get_img_preprocessor
@@ -56,11 +58,19 @@ def build_datasets(cfg):
 
 
 def make_loader(dataset, cfg, shuffle):
-    return torch.utils.data.DataLoader(
-        dataset, batch_size=cfg.loader.batch_size, shuffle=shuffle,
-        drop_last=True, num_workers=cfg.loader.num_workers,
-        pin_memory=True, persistent_workers=cfg.loader.num_workers > 0,
-    )
+    num_workers = int(cfg.loader.num_workers)
+    loader_kwargs = {
+        "batch_size": cfg.loader.batch_size,
+        "shuffle": shuffle,
+        "drop_last": True,
+        "num_workers": num_workers,
+        "pin_memory": bool(cfg.loader.pin_memory),
+        "persistent_workers": bool(cfg.loader.persistent_workers) and num_workers > 0,
+    }
+    # PyTorch rejects prefetch_factor when multiprocessing is disabled.
+    if num_workers > 0:
+        loader_kwargs["prefetch_factor"] = int(cfg.loader.prefetch_factor)
+    return torch.utils.data.DataLoader(dataset, **loader_kwargs)
 
 
 
@@ -220,10 +230,45 @@ def run(cfg: DictConfig):
             grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), cfg.grad_clip_norm)
             optimizer.step()
             global_step += 1
+            metrics = {
+                "train/loss": scalar(out["loss"]),
+                "train/grad_norm": scalar(grad_norm),
+                "train/epoch": epoch,
+            }
             if global_step % cfg.log_interval == 0:
-                print(f"epoch={epoch} step={global_step} loss={scalar(out['loss']):.6f} grad_norm={scalar(grad_norm):.4f}", flush=True)
+                with torch.no_grad():
+                    lewm_continuous = continuous_lewm_predictions(
+                        runtime.lewm, flat_paths, flat_actions
+                    )
+                    lewm_continuous_mse = continuous_trajectory_loss(lewm_continuous, target)
+                    model_final_mse = continuous_trajectory_loss(
+                        out["trajectory"][:, -1:], target[:, -1:]
+                    )
+                    lewm_continuous_final_mse = continuous_trajectory_loss(
+                        lewm_continuous[:, -1:], target[:, -1:]
+                    )
+                metrics.update({
+                    "diagnostic/lewm_continuous_mse": scalar(lewm_continuous_mse),
+                    "diagnostic/model_to_lewm_ratio": scalar(
+                        out["loss"].detach() / lewm_continuous_mse.clamp_min(1e-8)
+                    ),
+                    "diagnostic/model_advantage_over_lewm": scalar(
+                        lewm_continuous_mse - out["loss"].detach()
+                    ),
+                    "diagnostic/model_final_mse": scalar(model_final_mse),
+                    "diagnostic/lewm_continuous_final_mse": scalar(lewm_continuous_final_mse),
+                    "diagnostic/model_final_advantage_over_lewm": scalar(
+                        lewm_continuous_final_mse - model_final_mse
+                    ),
+                })
+                print(
+                    f"epoch={epoch} step={global_step} loss={scalar(out['loss']):.6f} "
+                    f"lewm_continuous_mse={scalar(lewm_continuous_mse):.6f} "
+                    f"grad_norm={scalar(grad_norm):.4f}",
+                    flush=True,
+                )
             if wandb_run is not None:
-                wandb_run.log({"train/loss": scalar(out["loss"]), "train/grad_norm": scalar(grad_norm), "train/epoch": epoch}, step=global_step)
+                wandb_run.log(metrics, step=global_step)
             if cfg.max_train_batches and batch_index + 1 >= cfg.max_train_batches:
                 break
         checkpoint(model, runtime, cfg, run_dir / f"{cfg.output_model_name}_epoch_{epoch}.pt")

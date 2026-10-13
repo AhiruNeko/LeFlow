@@ -20,8 +20,11 @@ data:
     keys_to_cache: [action, state]
 
 loader:
-  batch_size: 4
-  num_workers: 0
+  batch_size: 128
+  num_workers: 6
+  persistent_workers: true
+  prefetch_factor: 3
+  pin_memory: true
 
 world:
   env_name: swm/PushT-v1

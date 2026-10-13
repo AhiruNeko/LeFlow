@@ -184,6 +184,37 @@ def parallel_segment_predictions(lewm: nn.Module, reference_path: torch.Tensor, 
     return lewm.predict(starts, embedding)[:, -1].reshape(batch, horizon, latent_dim)
 
 
+@torch.no_grad()
+def continuous_lewm_predictions(
+    lewm: nn.Module,
+    reference_path: torch.Tensor,
+    actions: torch.Tensor,
+    *,
+    history_size: int = 3,
+) -> torch.Tensor:
+    """Autoregressive LeWM rollout from the initial planner state.
+
+    Unlike parallel_segment_predictions, each prediction becomes the history for
+    the next segment. This is a diagnostic baseline only; it is never optimized.
+    """
+    if history_size < 1:
+        raise ValueError("history_size must be positive")
+    batch, length, latent_dim = reference_path.shape
+    horizon = length - 1
+    if actions.shape[:2] != (batch, horizon):
+        raise ValueError("actions must align with reference path")
+
+    predicted = reference_path[:, :1].clone()
+    for step in range(horizon):
+        begin = max(0, step - history_size + 1)
+        action_history = actions[:, begin : step + 1]
+        latent_history = predicted[:, -action_history.size(1) :]
+        action_embedding = lewm.action_encoder(action_history)
+        next_latent = lewm.predict(latent_history, action_embedding)[:, -1:]
+        predicted = torch.cat([predicted, next_latent], dim=1)
+    return predicted[:, 1:]
+
+
 def continuous_trajectory_loss(predicted_trajectory: torch.Tensor, executed_trajectory: torch.Tensor):
     if predicted_trajectory.shape != executed_trajectory.shape:
         raise ValueError("prediction and target must match")
