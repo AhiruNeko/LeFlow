@@ -112,7 +112,10 @@ def encode_world_pixels(runtime, world, transform, device):
     if pixels.ndim != 4:
         raise ValueError("Expected world pixels [B,H,W,C].")
     pixels = pixels.permute(0, 3, 1, 2)
-    return runtime.encode_pixels(transform(pixels).to(device))
+    embedding = runtime.encode_pixels(transform(pixels).to(device))
+    if embedding.ndim != 3 or embedding.size(1) != 1:
+        raise ValueError(f"Expected one encoded latent per world frame, got {tuple(embedding.shape)}.")
+    return embedding[:, 0]
 
 
 @torch.no_grad()
