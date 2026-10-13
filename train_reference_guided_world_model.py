@@ -63,6 +63,25 @@ def make_loader(dataset, cfg, shuffle):
     )
 
 
+
+
+def init_wandb(cfg, run_dir):
+    if not cfg.wandb.enabled:
+        return None
+    try:
+        import wandb
+    except ImportError:
+        print("WandB unavailable; continuing without it.", flush=True)
+        return None
+    return wandb.init(
+        project=cfg.wandb.project,
+        entity=cfg.wandb.entity or None,
+        name=cfg.output_model_name,
+        mode=cfg.wandb.mode,
+        dir=str(run_dir),
+        config=OmegaConf.to_container(cfg, resolve=True),
+    )
+
 def scalar(value):
     return float(value.detach()) if torch.is_tensor(value) else float(value)
 
@@ -78,10 +97,13 @@ def init_world_from_dataset(world, raw_dataset, episodes, starts, goal_offset):
     world.reset(seed=seeds, options=[{} for _ in range(len(chunks))])
     for env, chunk in zip(world.envs.unwrapped.envs, chunks):
         base = env.unwrapped
-        if "state" not in chunk or "goal_state" not in chunk:
-            raise KeyError("Real-rollout training requires dataset columns state and goal_state.")
+        if "state" not in chunk:
+            raise KeyError("Real-rollout training requires a dataset state column.")
         base._set_state(np.asarray(chunk["state"][0]))
-        base._set_goal_state(np.asarray(chunk["goal_state"][-1]))
+        # PushT restores its goal from the expert seed. Other supported
+        # datasets may expose a goal_state column, in which case use it.
+        if "goal_state" in chunk:
+            base._set_goal_state(np.asarray(chunk["goal_state"][-1]))
 
 
 @torch.no_grad()
@@ -170,6 +192,7 @@ def run(cfg: DictConfig):
     run_dir = Path(stablewm_cache_dir(sub_folder="checkpoints"), cfg.subdir)
     run_dir.mkdir(parents=True, exist_ok=True)
     OmegaConf.save(cfg, run_dir / "reference_guided_world_model_config.yaml")
+    wandb_run = init_wandb(cfg, run_dir)
     global_step = 0
     for epoch in range(1, cfg.epochs + 1):
         model.train()
@@ -196,11 +219,15 @@ def run(cfg: DictConfig):
             global_step += 1
             if global_step % cfg.log_interval == 0:
                 print(f"epoch={epoch} step={global_step} loss={scalar(out['loss']):.6f} grad_norm={scalar(grad_norm):.4f}", flush=True)
+            if wandb_run is not None:
+                wandb_run.log({"train/loss": scalar(out["loss"]), "train/grad_norm": scalar(grad_norm), "train/epoch": epoch}, step=global_step)
             if cfg.max_train_batches and batch_index + 1 >= cfg.max_train_batches:
                 break
         checkpoint(model, runtime, cfg, run_dir / f"{cfg.output_model_name}_epoch_{epoch}.pt")
         checkpoint(model, runtime, cfg, run_dir / f"{cfg.output_model_name}.pt")
         print(f"epoch={epoch} checkpoint_done", flush=True)
+    if wandb_run is not None:
+        wandb_run.finish()
     world.close()
 
 

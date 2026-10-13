@@ -16,8 +16,8 @@ grad_clip_norm: 1.0
 data:
   dataset:
     name: pusht_expert_train
-    keys_to_load: [pixels, action, state, goal_state]
-    keys_to_cache: [action, state, goal_state]
+    keys_to_load: [pixels, action, state]
+    keys_to_cache: [action, state]
 
 loader:
   batch_size: 4
@@ -36,3 +36,9 @@ sampling:
 optimizer:
   lr: 1.0e-4
   weight_decay: 1.0e-4
+
+wandb:
+  enabled: true
+  project: leflow-dev
+  entity: null
+  mode: online
