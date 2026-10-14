@@ -12,6 +12,9 @@ device: cuda
 img_size: 224
 epochs: 10
 train_split: 0.9
+validation:
+  # null validates all held-out clips after each epoch.
+  max_batches: null
 log_interval: 10
 max_train_batches: null
 grad_clip_norm: 1.0

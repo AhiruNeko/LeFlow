@@ -37,6 +37,8 @@ eval:
   eval_budget: 50
   img_size: 224
   dataset_name: pusht_expert_train
+  # False is useful for repeated seed evaluation: temporary artifacts only.
+  save_artifacts: true
   callables:
     # -- set state
     - method: _set_state

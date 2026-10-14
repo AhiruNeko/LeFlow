@@ -175,6 +175,57 @@ def set_random_seed(seed):
         torch.backends.cudnn.deterministic = True
 
 
+@torch.no_grad()
+def validate_cached_model(model, lewm, loader, device, max_batches=None):
+    """Evaluate the supervised target and the continuous-LeWM baseline."""
+    model.eval()
+    totals = {
+        "loss": 0.0,
+        "lewm_mse": 0.0,
+        "final_mse": 0.0,
+        "lewm_final_mse": 0.0,
+    }
+    records = 0
+    for batch_index, batch in enumerate(loader, start=1):
+        reference_path = batch["reference_path"].to(device, non_blocking=True)
+        actions = batch["actions"].to(device, non_blocking=True)
+        target = batch["executed_target"].to(device, non_blocking=True)
+        output = reference_guided_training_step(
+            model, lewm, reference_path, actions, target
+        )
+        lewm_continuous = continuous_lewm_predictions(
+            lewm, reference_path, actions
+        )
+        values = {
+            "loss": output["loss"],
+            "lewm_mse": continuous_trajectory_loss(lewm_continuous, target),
+            "final_mse": continuous_trajectory_loss(
+                output["trajectory"][:, -1:], target[:, -1:]
+            ),
+            "lewm_final_mse": continuous_trajectory_loss(
+                lewm_continuous[:, -1:], target[:, -1:]
+            ),
+        }
+        batch_records = reference_path.size(0)
+        records += batch_records
+        for key, value in values.items():
+            totals[key] += scalar(value) * batch_records
+        if max_batches and batch_index >= max_batches:
+            break
+
+    if records == 0:
+        raise RuntimeError("Validation loader produced no records.")
+    metrics = {key: value / records for key, value in totals.items()}
+    metrics.update({
+        "advantage": metrics["lewm_mse"] - metrics["loss"],
+        "ratio": metrics["loss"] / max(metrics["lewm_mse"], 1e-8),
+        "final_advantage": metrics["lewm_final_mse"] - metrics["final_mse"],
+        "final_ratio": metrics["final_mse"] / max(metrics["lewm_final_mse"], 1e-8),
+        "records": records,
+    })
+    return metrics
+
+
 def restore_world_from_chunks(world, chunks):
     """Reset vector environments, then restore each recorded simulator state."""
     seeds = []
@@ -710,15 +761,21 @@ def run(cfg: DictConfig):
             online_training = True
 
     train_size = int(len(training_dataset) * cfg.train_split)
-    train_set, _ = torch.utils.data.random_split(
+    train_set, validation_set = torch.utils.data.random_split(
         training_dataset,
         [train_size, len(training_dataset) - train_size],
         generator=torch.Generator().manual_seed(cfg.seed),
     )
     train_loader = make_loader(train_set, cfg, True)
+    validation_loader = None
+    if not online_training:
+        validation_loader = make_loader(
+            validation_set, cfg, shuffle=False, drop_last=False
+        )
     total_steps = len(train_loader) * int(cfg.epochs)
     print(
         f"training_schedule batches_per_epoch={len(train_loader)} "
+        f"validation_batches={len(validation_loader) if validation_loader else 0} "
         f"epochs={cfg.epochs} total_steps={total_steps} source={cache_mode}",
         flush=True,
     )
@@ -734,6 +791,7 @@ def run(cfg: DictConfig):
     wandb_run = init_wandb(cfg, run_dir)
 
     global_step = 0
+    best_validation_loss = float("inf")
     try:
         for epoch in range(1, cfg.epochs + 1):
             model.train()
@@ -830,6 +888,50 @@ def run(cfg: DictConfig):
                     wandb_run.log(metrics, step=global_step)
                 if cfg.max_train_batches and batch_index + 1 >= cfg.max_train_batches:
                     break
+
+            if validation_loader is not None:
+                validation = validate_cached_model(
+                    model,
+                    lewm,
+                    validation_loader,
+                    device,
+                    max_batches=cfg.validation.max_batches,
+                )
+                validation_log = {
+                    "val/loss": validation["loss"],
+                    "val/lewm_continuous_mse": validation["lewm_mse"],
+                    "val/model_to_lewm_ratio": validation["ratio"],
+                    "val/model_advantage_over_lewm": validation["advantage"],
+                    "val/model_final_mse": validation["final_mse"],
+                    "val/lewm_continuous_final_mse": validation["lewm_final_mse"],
+                    "val/model_final_advantage_over_lewm": validation["final_advantage"],
+                    "val/model_final_to_lewm_ratio": validation["final_ratio"],
+                    "val/records": validation["records"],
+                    "val/epoch": epoch,
+                }
+                if wandb_run is not None:
+                    wandb_run.log(validation_log, step=global_step)
+                print(
+                    f"epoch={epoch} validation "
+                    f"loss={validation['loss']:.6f} "
+                    f"ratio={validation['ratio']:.4f} "
+                    f"advantage={validation['advantage']:.6f} "
+                    f"final_advantage={validation['final_advantage']:.6f}",
+                    flush=True,
+                )
+                if validation["loss"] < best_validation_loss:
+                    best_validation_loss = validation["loss"]
+                    checkpoint(
+                        model,
+                        cfg,
+                        run_dir / f"{cfg.output_model_name}_best.pt",
+                        cache_metadata,
+                    )
+                    print(
+                        f"epoch={epoch} best_checkpoint_done "
+                        f"val_loss={best_validation_loss:.6f}",
+                        flush=True,
+                    )
 
             checkpoint(
                 model,

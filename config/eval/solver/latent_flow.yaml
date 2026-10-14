@@ -10,3 +10,6 @@ smoothness_weight: 0.0
 device: "cuda"
 seed: ${seed}
 history_size: 3
+# Optional trained reference-guided world model. When set, candidates are
+# scored by its endpoint prediction after independent LeWM segment predictions.
+reference_guided_checkpoint: null

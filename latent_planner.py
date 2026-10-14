@@ -393,6 +393,42 @@ class LatentPlannerRuntime(nn.Module):
         return flat_actions.reshape(*z_t.shape[:-1], -1)
 
     @torch.no_grad()
+    def reference_guided_rollout_paths(
+        self,
+        reference_guided_model: nn.Module,
+        paths: torch.Tensor,
+        actions: torch.Tensor,
+    ) -> torch.Tensor:
+        """Predict continuous candidate trajectories from local LeWM segments.
+
+        Every local segment starts from the candidate planner path, matching the
+        reference-guided model's training inputs. Its output is a continuous
+        H-step trajectory without the initial state.
+        """
+        if paths.ndim != 4 or actions.ndim != 4:
+            raise ValueError("paths and actions must be [batch, samples, horizon, ...]")
+        batch, samples, length, latent_dim = paths.shape
+        horizon = length - 1
+        if actions.shape[:3] != (batch, samples, horizon):
+            raise ValueError("actions must align with candidate paths")
+
+        flat_paths = paths.reshape(batch * samples, length, latent_dim)
+        flat_actions = actions.reshape(batch * samples, horizon, actions.size(-1))
+        starts = flat_paths[:, :-1].reshape(batch * samples * horizon, 1, latent_dim)
+        action_blocks = flat_actions.reshape(
+            batch * samples * horizon, 1, flat_actions.size(-1)
+        )
+        action_embedding = self.lewm.action_encoder(action_blocks)
+        local_predictions = self.lewm.predict(starts, action_embedding)[:, -1:]
+        local_predictions = local_predictions.reshape(
+            batch * samples, horizon, latent_dim
+        )
+        trajectory = reference_guided_model(
+            flat_paths, flat_actions, local_predictions
+        )["trajectory"]
+        return trajectory.reshape(batch, samples, horizon, latent_dim)
+
+    @torch.no_grad()
     def rollout_final_latent(
         self,
         z_start: torch.Tensor,
@@ -424,6 +460,7 @@ class LatentPlannerRuntime(nn.Module):
         consistency_weight: float = 0.0,
         smoothness_weight: float = 0.0,
         history_size: int = 3,
+        reference_guided_model: nn.Module | None = None,
         generator: torch.Generator | None = None,
     ) -> dict[str, torch.Tensor]:
         z_start, z_goal = self.encode_current_and_goal(info_dict)
@@ -438,7 +475,16 @@ class LatentPlannerRuntime(nn.Module):
         actions = self.decode_actions(paths)
         score_mode = score_mode.lower()
         if score_mode == "rollout_goal":
-            rollout_final = self.rollout_final_latent(z_start, actions, history_size)
+            if reference_guided_model is None:
+                rollout_final = self.rollout_final_latent(
+                    z_start, actions, history_size
+                )
+            else:
+                rollout_paths = self.reference_guided_rollout_paths(
+                    reference_guided_model, paths, actions
+                )
+                rollout_final = rollout_paths[:, :, -1]
+                self.rollout_count += actions.size(0) * actions.size(1)
             goal_cost = F.mse_loss(
                 rollout_final,
                 z_goal[:, None].expand_as(rollout_final),
@@ -513,6 +559,7 @@ class LearnedLatentPathSolver:
         device: str | torch.device = "cpu",
         seed: int = 1234,
         history_size: int = 3,
+        reference_guided_checkpoint: str | Path | None = None,
     ):
         self.checkpoint = checkpoint
         self.batch_size = batch_size
@@ -528,6 +575,24 @@ class LearnedLatentPathSolver:
         self.device = requested_device
         self.history_size = history_size
         self.model = LatentPlannerRuntime.from_checkpoint(checkpoint, device=self.device)
+        self.reference_guided_model = None
+        if reference_guided_checkpoint:
+            from reference_guided_world_model import ReferenceGuidedWorldModel
+
+            reference_path = _resolve_checkpoint(reference_guided_checkpoint)
+            self.reference_guided_model = ReferenceGuidedWorldModel.from_checkpoint(
+                str(reference_path), device=self.device
+            )
+            architecture = self.reference_guided_model.architecture
+            if architecture.latent_dim != self.model.flow.latent_dim:
+                raise ValueError("Reference-guided latent_dim does not match planner.")
+            if architecture.action_dim != self.model.inverse_dynamics.action_dim:
+                raise ValueError("Reference-guided action_dim does not match planner.")
+            if architecture.max_horizon < self.model.flow.max_horizon:
+                raise ValueError(
+                    "Reference-guided max_horizon is smaller than planner max_horizon."
+                )
+            self.reference_guided_model.requires_grad_(False)
         self.torch_gen = torch.Generator(device=self.device).manual_seed(seed)
 
     def configure(self, *, action_space: gym.Space, n_envs: int, config: Any) -> None:
@@ -573,6 +638,7 @@ class LearnedLatentPathSolver:
                 consistency_weight=self.consistency_weight,
                 smoothness_weight=self.smoothness_weight,
                 history_size=self.history_size,
+                reference_guided_model=self.reference_guided_model,
                 generator=self.torch_gen,
             )
             all_actions.append(out["actions"])

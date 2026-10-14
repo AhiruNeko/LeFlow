@@ -112,6 +112,33 @@ class ReferenceGuidedWorldModel(nn.Module):
         nn.init.normal_(self.path_position, std=0.02)
 
     @classmethod
+    def from_checkpoint(
+        cls,
+        checkpoint: str,
+        *,
+        device: str | torch.device = "cpu",
+    ):
+        """Restore a trained reference-guided model for frozen evaluation."""
+        payload = torch.load(checkpoint, map_location="cpu", weights_only=False)
+        if not isinstance(payload, dict):
+            raise TypeError("Reference-guided checkpoint must be a state-dict payload.")
+        try:
+            architecture = payload["architecture"]
+            state_dict = payload["reference_guided_world_model_state_dict"]
+        except KeyError as error:
+            raise KeyError(
+                "Checkpoint is not a reference-guided world-model checkpoint."
+            ) from error
+        model = cls(
+            latent_dim=int(architecture["latent_dim"]),
+            action_dim=int(architecture["action_dim"]),
+            max_horizon=int(architecture["max_horizon"]),
+            depth=int(architecture["depth"]),
+        )
+        model.load_state_dict(state_dict, strict=True)
+        return model.to(device).eval()
+
+    @classmethod
     def from_planner_runtime(cls, planner_runtime: Any, *, max_horizon: int | None = None):
         return cls(
             latent_dim=int(planner_runtime.flow.latent_dim),
