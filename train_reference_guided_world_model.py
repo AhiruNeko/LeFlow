@@ -48,7 +48,7 @@ class RolloutCacheDataset(torch.utils.data.Dataset):
     def __init__(self, path):
         self.path = str(Path(path).expanduser().resolve())
         self._file = None
-        with h5py.File(self.path, "r") as file:
+        with h5py.File(self.path, "r", locking=False) as file:
             if not bool(file.attrs.get("complete", False)):
                 raise RuntimeError(f"Rollout cache is incomplete: {self.path}")
             missing = [key for key in self.required_keys if key not in file]
@@ -70,7 +70,7 @@ class RolloutCacheDataset(torch.utils.data.Dataset):
 
     def _get_file(self):
         if self._file is None:
-            self._file = h5py.File(self.path, "r")
+            self._file = h5py.File(self.path, "r", locking=False)
         return self._file
 
     def __getitem__(self, index):
@@ -226,29 +226,50 @@ def validate_cached_model(model, lewm, loader, device, max_batches=None):
     return metrics
 
 
-def restore_world_from_chunks(world, chunks):
-    """Reset vector environments, then restore each recorded simulator state."""
+def _restore_argument(spec, chunk):
+    """Resolve a task restore argument from a recorded chunk or a literal."""
+    if not isinstance(spec, dict):
+        return spec
+    if "literal" in spec:
+        return spec["literal"]
+    source = spec.get("source")
+    if source is None:
+        raise KeyError("restore argument requires either 'source' or 'literal'.")
+    if source not in chunk:
+        raise KeyError(
+            f"Restore source {source!r} is absent from the dataset chunk. "
+            "Add it to data.dataset.keys_to_load."
+        )
+    return np.asarray(chunk[source][int(spec.get("index", 0))])
+
+
+def restore_world_from_chunks(world, chunks, restore_callables):
+    """Reset environments and restore task state using declarative callables."""
+    if not restore_callables:
+        raise ValueError("rollout_restore.callables must not be empty.")
     seeds = []
     for chunk in chunks:
         seed = chunk.get("seed")
         seeds.append(None if seed is None else int(np.asarray(seed[0])))
-    # SyncWorld accepts one options dict for all environments. Per-task
-    # variation is restored by its seed before the recorded state is applied.
     world.reset(seed=seeds, options={})
     for env, chunk in zip(world.envs.unwrapped.envs, chunks):
         base = env.unwrapped
-        if "state" not in chunk:
-            raise KeyError("Real-rollout training requires a dataset state column.")
-        base._set_state(np.asarray(chunk["state"][0]))
-        if "goal_state" in chunk:
-            base._set_goal_state(np.asarray(chunk["goal_state"][-1]))
+        for callable_cfg in restore_callables:
+            method_name = callable_cfg["method"]
+            kwargs = {
+                name: _restore_argument(spec, chunk)
+                for name, spec in callable_cfg.get("args", {}).items()
+            }
+            getattr(base, method_name)(**kwargs)
 
 
-def init_world_from_dataset(world, raw_dataset, episodes, starts, goal_offset):
+def init_world_from_dataset(
+    world, raw_dataset, episodes, starts, goal_offset, restore_callables
+):
     episodes = np.asarray(episodes, dtype=np.int64)
     starts = np.asarray(starts, dtype=np.int64)
     chunks = raw_dataset.load_chunk(episodes, starts, starts + int(goal_offset))
-    restore_world_from_chunks(world, chunks)
+    restore_world_from_chunks(world, chunks, restore_callables)
 
 
 def _rollout_worker_main(
@@ -259,6 +280,7 @@ def _rollout_worker_main(
     world_kwargs,
     image_shape,
     action_block,
+    restore_callables,
 ):
     """CPU-only persistent worker for one shard of synchronous vector envs."""
     os.environ.setdefault("OMP_NUM_THREADS", "1")
@@ -284,7 +306,7 @@ def _rollout_worker_main(
                     world_size = shard_size
 
                 init_world_from_dataset(
-                    world, raw_dataset, episodes, starts, goal_offset
+                    world, raw_dataset, episodes, starts, goal_offset, restore_callables
                 )
                 segment_frames = []
                 for segment in range(horizon):
@@ -325,10 +347,12 @@ class SimulatorRolloutPool:
         world_kwargs,
         image_shape,
         action_block,
+        restore_callables,
     ):
         if num_workers < 1:
             raise ValueError("num_workers must be positive")
         self.num_workers = int(num_workers)
+        self.restore_callables = restore_callables
         self._context = mp.get_context("spawn")
         self._result_queue = self._context.Queue()
         self._task_queues = [self._context.Queue(maxsize=1) for _ in range(num_workers)]
@@ -344,6 +368,7 @@ class SimulatorRolloutPool:
                     world_kwargs,
                     image_shape,
                     action_block,
+                    restore_callables,
                 ),
                 daemon=True,
             )
@@ -406,6 +431,7 @@ def encode_world_pixels(runtime, world, transform, device):
 def simulator_targets(
     runtime, world, raw_dataset, episodes, starts, reference_paths, actions,
     *, goal_offset, image_tx, action_mean, action_std, device, rollout_pool=None,
+    restore_callables=None,
 ):
     batch, candidates, horizon, action_dim = actions.shape
     n = batch * candidates
@@ -433,8 +459,14 @@ def simulator_targets(
             targets.append(embedding[:, 0])
         return torch.stack(targets, dim=1)
 
-    init_world_from_dataset(world, raw_dataset, np.repeat(episodes, candidates),
-                            np.repeat(starts, candidates), goal_offset)
+    init_world_from_dataset(
+        world,
+        raw_dataset,
+        np.repeat(episodes, candidates),
+        np.repeat(starts, candidates),
+        goal_offset,
+        restore_callables,
+    )
     targets = []
     for segment in range(horizon):
         for inner in range(runtime.action_block):
@@ -475,6 +507,11 @@ def generate_rollout_cache(
         source_dataset, cfg, shuffle=False, drop_last=False
     )
     count = len(source_dataset)
+    max_records = cfg.rollout_cache.get("max_records")
+    if max_records is not None:
+        count = min(count, int(max_records))
+    if count < 1:
+        raise ValueError("rollout_cache.max_records must be positive when provided.")
     latent_dim = int(runtime.flow.latent_dim)
     action_dim = int(runtime.inverse_dynamics.action_dim)
     model_max_horizon = int(runtime.flow.max_horizon)
@@ -529,6 +566,14 @@ def generate_rollout_cache(
             file.attrs["collection_seed"] = int(cfg.rollout_cache.collection_seed)
 
             for batch_index, batch in enumerate(collection_loader, start=1):
+                remaining = count - offset
+                if remaining <= 0:
+                    break
+                if batch["pixels"].size(0) > remaining:
+                    batch = {
+                        key: value[:remaining] if torch.is_tensor(value) else value
+                        for key, value in batch.items()
+                    }
                 z_expert = runtime.encode_pixels(batch["pixels"].to(device))
                 z_start, z_goal = z_expert[:, 0], z_expert[:, -1]
                 paths = runtime.sample_paths(
@@ -553,6 +598,9 @@ def generate_rollout_cache(
                     action_std=action_std,
                     device=device,
                     rollout_pool=rollout_pool,
+                    restore_callables=OmegaConf.to_container(
+                        cfg.rollout_restore.callables, resolve=True
+                    ),
                 )
                 records = paths.size(0)
                 end = offset + records
@@ -606,6 +654,9 @@ def create_rollout_backend(cfg, horizon, action_block):
             world_kwargs=world_cfg,
             image_shape=(224, 224),
             action_block=action_block,
+            restore_callables=OmegaConf.to_container(
+                cfg.rollout_restore.callables, resolve=True
+            ),
         )
         return None, pool
 
@@ -822,6 +873,9 @@ def run(cfg: DictConfig):
                             action_std=action_std,
                             device=device,
                             rollout_pool=rollout_pool,
+                            restore_callables=OmegaConf.to_container(
+                                cfg.rollout_restore.callables, resolve=True
+                            ),
                         )
                     flat_paths = paths[:, 0]
                     flat_actions = actions[:, 0]

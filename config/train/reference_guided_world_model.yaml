@@ -1,4 +1,5 @@
 defaults:
+  - rollout_restore: pusht
   - _self_
 
 planner_checkpoint: null
@@ -68,3 +69,5 @@ rollout_cache:
   # If true, mode=generate exits after atomically writing the cache.
   generate_only: false
   chunk_size: 4096
+  # Optional cap used only for fast smoke tests. null collects every clip.
+  max_records: null

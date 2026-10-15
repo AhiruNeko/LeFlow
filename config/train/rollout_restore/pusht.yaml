@@ -1,0 +1,11 @@
+callables:
+  - method: _set_state
+    args:
+      state:
+        source: state
+        index: 0
+  - method: _set_goal_state
+    args:
+      goal_state:
+        source: state
+        index: -1

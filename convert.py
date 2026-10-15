@@ -1,39 +1,63 @@
-import json, torch, stable_pretraining as spt
+import argparse
+import json
 from pathlib import Path
-from jepa import JEPA
-from module import ARPredictor, Embedder, MLP
+
+import torch
+import stable_pretraining as spt
 import stable_worldmodel as swm
 
-import os
-os.environ['STABLEWM_HOME'] = '/root/projects/pusht'
+from jepa import JEPA
+from module import ARPredictor, Embedder, MLP
 
-src = Path(swm.data.utils.get_cache_dir(), "checkpoints/pusht")
-out = Path(swm.data.utils.get_cache_dir(), "checkpoints/pusht", "latent_planner.ckpt")
 
-cfg = json.loads((src / "latent_planner_config.yaml").read_text())
-encoder = spt.backbone.utils.vit_hf(
-    cfg["encoder"]["size"],
-    patch_size=cfg["encoder"]["patch_size"],
-    image_size=cfg["encoder"]["image_size"],
-    pretrained=False, use_mask_token=False,
-)
-mlp = lambda k: MLP(input_dim=cfg[k]["input_dim"], output_dim=cfg[k]["output_dim"],
-                    hidden_dim=cfg[k]["hidden_dim"], norm_fn=torch.nn.BatchNorm1d)
+def build_model(cfg: dict) -> JEPA:
+    encoder = spt.backbone.utils.vit_hf(
+        cfg["encoder"]["size"],
+        patch_size=cfg["encoder"]["patch_size"],
+        image_size=cfg["encoder"]["image_size"],
+        pretrained=False,
+        use_mask_token=False,
+    )
 
-predictor_cfg = cfg["predictor"].copy()
-predictor_cfg.pop("_target_", None)
+    def mlp(key: str) -> MLP:
+        return MLP(
+            input_dim=cfg[key]["input_dim"],
+            output_dim=cfg[key]["output_dim"],
+            hidden_dim=cfg[key]["hidden_dim"],
+            norm_fn=torch.nn.BatchNorm1d,
+        )
 
-action_cfg = cfg["action_encoder"].copy()
-action_cfg.pop("_target_", None)
+    predictor_cfg = cfg["predictor"].copy()
+    predictor_cfg.pop("_target_", None)
+    action_cfg = cfg["action_encoder"].copy()
+    action_cfg.pop("_target_", None)
+    return JEPA(
+        encoder=encoder,
+        predictor=ARPredictor(**predictor_cfg),
+        action_encoder=Embedder(**action_cfg),
+        projector=mlp("projector"),
+        pred_proj=mlp("pred_proj"),
+    )
 
-model = JEPA(
-    encoder=encoder,
-    predictor=ARPredictor(**predictor_cfg),
-    action_encoder=Embedder(**action_cfg),
-    projector=mlp("projector"),
-    pred_proj=mlp("pred_proj"),
-)
-sd = torch.load(src / "latent_planner.pt", map_location="cpu", weights_only=False)
-model.load_state_dict(sd, strict=True)
-out.parent.mkdir(parents=True, exist_ok=True)
-torch.save(model, out)
+
+def main() -> None:
+    cache_dir = Path(swm.data.utils.get_cache_dir(), "checkpoints/pusht")
+    parser = argparse.ArgumentParser(
+        description="Convert a LeWM state dict into an AutoCostModel checkpoint."
+    )
+    parser.add_argument("--weights", type=Path, default=cache_dir / "latent_planner.pt")
+    parser.add_argument("--config", type=Path, default=cache_dir / "latent_planner_config.yaml")
+    parser.add_argument("--output", type=Path, default=cache_dir / "latent_planner.ckpt")
+    args = parser.parse_args()
+
+    cfg = json.loads(args.config.read_text())
+    model = build_model(cfg)
+    state_dict = torch.load(args.weights, map_location="cpu", weights_only=False)
+    model.load_state_dict(state_dict, strict=True)
+    args.output.parent.mkdir(parents=True, exist_ok=True)
+    torch.save(model.eval(), args.output)
+    print(f"Converted {args.weights} -> {args.output}")
+
+
+if __name__ == "__main__":
+    main()
