@@ -14,6 +14,46 @@ import torch.nn.functional as F
 import stable_worldmodel as swm
 
 
+def _install_reacher_target_qpos_compat() -> None:
+    """Restore a Reacher target from recorded terminal joint positions."""
+    try:
+        from stable_worldmodel.envs.dmcontrol.reacher import (
+            ReacherDMControlWrapper,
+        )
+    except ImportError:
+        return
+    if hasattr(ReacherDMControlWrapper, "set_target_qpos"):
+        return
+
+    def set_target_qpos(self, target_qpos) -> None:
+        physics = self.env.physics
+        target_qpos = np.asarray(target_qpos, dtype=physics.data.qpos.dtype)
+        if target_qpos.shape != physics.data.qpos.shape:
+            raise ValueError(
+                "target_qpos must match Reacher qpos shape "
+                f"{physics.data.qpos.shape}, got {target_qpos.shape}."
+            )
+
+        saved_qpos = physics.data.qpos.copy()
+        saved_qvel = physics.data.qvel.copy()
+        saved_act = physics.data.act.copy()
+        physics.data.qpos[:] = target_qpos
+        physics.forward()
+        target_xy = physics.named.data.geom_xpos["finger", :2].copy()
+
+        physics.data.qpos[:] = saved_qpos
+        physics.data.qvel[:] = saved_qvel
+        if physics.data.act.size:
+            physics.data.act[:] = saved_act
+        physics.named.model.geom_pos["target", "x"] = target_xy[0]
+        physics.named.model.geom_pos["target", "y"] = target_xy[1]
+        physics.forward()
+
+    ReacherDMControlWrapper.set_target_qpos = set_target_qpos
+
+
+_install_reacher_target_qpos_compat()
+
 def stablewm_cache_dir(sub_folder: str | None = None) -> Path:
     try:
         return Path(swm.data.utils.get_cache_dir(sub_folder=sub_folder))
