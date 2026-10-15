@@ -20,7 +20,8 @@ def _install_reacher_target_qpos_compat() -> None:
         from stable_worldmodel.envs.dmcontrol.reacher import (
             ReacherDMControlWrapper,
         )
-    except ImportError:
+        # Other tasks do not need DM-Control or its renderer.
+    except Exception:
         return
     if hasattr(ReacherDMControlWrapper, "set_target_qpos"):
         return
