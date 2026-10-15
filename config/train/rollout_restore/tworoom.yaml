@@ -7,5 +7,5 @@ callables:
   - method: _set_goal_state
     args:
       goal_state:
-        source: goal_proprio
+        source: proprio
         index: -1

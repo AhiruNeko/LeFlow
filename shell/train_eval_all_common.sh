@@ -56,8 +56,8 @@ case "$TASK" in
     EVAL_CONFIG=tworoom
     RESTORE_CONFIG=tworoom
     DATASET_REL=tworoom
-    DATA_KEYS='pixels,action,proprio,goal_proprio'
-    CACHE_KEYS='action,proprio,goal_proprio'
+    DATA_KEYS='pixels,action,proprio'
+    CACHE_KEYS='action,proprio'
     WORLD_ARGS=(world.env_name=swm/TwoRoom-v1 world.history_size=1 world.frame_skip=1)
     ;;
 esac
