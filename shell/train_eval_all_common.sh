@@ -51,7 +51,7 @@ case "$TASK" in
     PLANNER_DATA_KEYS='pixels,action,observation'
     ROLLOUT_DATA_KEYS='pixels,action,observation,qpos,qvel'
     CACHE_KEYS='action'
-    WORLD_ARGS=(world.env_name=swm/ReacherDMControl-v0 world.history_size=1 world.frame_skip=1 ++world.task=qpos_match)
+    WORLD_ARGS=(world.env_name=swm/ReacherDMControl-v0 world.history_size=1 world.frame_skip=1 ++world.task=hard)
     ;;
   tworooms)
     TASK_ROOT="$TASKS_ROOT/tworooms"

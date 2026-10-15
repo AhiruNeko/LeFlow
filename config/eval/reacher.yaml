@@ -9,7 +9,7 @@ world:
   max_episode_steps: ??? # make sure it's >= eval_budget
   history_size: 1
   frame_skip: 1
-  task: qpos_match
+  task: hard
 
 dataset:
   stats: ${eval.dataset_name}
