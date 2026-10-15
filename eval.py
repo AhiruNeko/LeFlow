@@ -80,6 +80,15 @@ def run(cfg: DictConfig):
         cfg.plan_config.horizon * cfg.plan_config.action_block <= cfg.eval.eval_budget
     ), "Planning horizon must be smaller than or equal to eval_budget"
 
+    # Reacher datasets specify the target by terminal qpos. Install the
+    # compatibility method only when this evaluation actually requests it,
+    # keeping non-DM-Control tasks independent of EGL/MuJoCo imports.
+    eval_callables = OmegaConf.to_container(cfg.eval.get("callables"), resolve=True) or []
+    if any(item.get("method") == "set_target_qpos" for item in eval_callables):
+        from latent_planner import _install_reacher_target_qpos_compat
+
+        _install_reacher_target_qpos_compat()
+
     # create world environment
     cfg.world.max_episode_steps = 2 * cfg.eval.eval_budget
     world = swm.World(**cfg.world, image_shape=(224, 224))

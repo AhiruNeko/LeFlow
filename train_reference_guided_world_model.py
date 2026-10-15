@@ -15,7 +15,12 @@ from tqdm.auto import tqdm
 from omegaconf import DictConfig, OmegaConf, open_dict
 from torchvision.transforms import v2 as transforms
 
-from latent_planner import LatentPlannerRuntime, load_lewm, stablewm_cache_dir
+from latent_planner import (
+    LatentPlannerRuntime,
+    _install_reacher_target_qpos_compat,
+    load_lewm,
+    stablewm_cache_dir,
+)
 from reference_guided_world_model import (
     ReferenceGuidedWorldModel,
     continuous_lewm_predictions,
@@ -256,6 +261,8 @@ def restore_world_from_chunks(world, chunks, restore_callables):
         base = env.unwrapped
         for callable_cfg in restore_callables:
             method_name = callable_cfg["method"]
+            if method_name == "set_target_qpos":
+                _install_reacher_target_qpos_compat()
             kwargs = {
                 name: _restore_argument(spec, chunk)
                 for name, spec in callable_cfg.get("args", {}).items()

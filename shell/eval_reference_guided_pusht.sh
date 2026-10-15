@@ -31,4 +31,3 @@ mkdir -p "${DESTINATION}"
 find "${STABLEWM_HOME}/leflow/pusht" -maxdepth 1 -type f \
   \( -name '*.mp4' -o -name '*.gif' -o -name 'pusht_results.txt' \) \
   -exec mv -t "${DESTINATION}" {} +
-\n

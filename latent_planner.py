@@ -53,8 +53,6 @@ def _install_reacher_target_qpos_compat() -> None:
     ReacherDMControlWrapper.set_target_qpos = set_target_qpos
 
 
-_install_reacher_target_qpos_compat()
-
 def stablewm_cache_dir(sub_folder: str | None = None) -> Path:
     try:
         return Path(swm.data.utils.get_cache_dir(sub_folder=sub_folder))
