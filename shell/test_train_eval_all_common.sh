@@ -24,8 +24,16 @@ cleanup() {
     "$TASK_ROOT/.smoke_runtime/$RUN_TAG" \
     "$PROJECT_ROOT/logs/train_eval_all_${TASK}_$RUN_TAG.log"
 }
-trap cleanup EXIT
-trap 'exit 130' INT TERM
+cleanup_done=false
+cleanup_once() {
+  if [[ "$cleanup_done" == true ]]; then
+    return
+  fi
+  cleanup_done=true
+  cleanup
+}
+trap cleanup_once EXIT ERR
+trap 'cleanup_once; exit 130' INT TERM
 
 export RUN_TAG
 export PLANNER_EPOCHS=1

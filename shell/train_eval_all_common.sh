@@ -21,7 +21,8 @@ case "$TASK" in
     EVAL_CONFIG=pusht
     RESTORE_CONFIG=pusht
     DATASET_REL=pusht_expert_train
-    DATA_KEYS='pixels,action,state'
+    PLANNER_DATA_KEYS='pixels,action,state'
+    ROLLOUT_DATA_KEYS='pixels,action,state'
     CACHE_KEYS='action,state'
     WORLD_ARGS=(world.env_name=swm/PushT-v1 world.history_size=1 world.frame_skip=1)
     ;;
@@ -31,7 +32,8 @@ case "$TASK" in
     EVAL_CONFIG=cube
     RESTORE_CONFIG=cube
     DATASET_REL=ogbench/cube_single_expert
-    DATA_KEYS='pixels,action,observation,qpos,qvel,goal_privileged_block_0_pos,goal_privileged_block_0_quat'
+    PLANNER_DATA_KEYS='pixels,action,observation'
+    ROLLOUT_DATA_KEYS='pixels,action,observation,qpos,qvel,privileged_block_0_pos,privileged_block_0_quat'
     CACHE_KEYS='action'
     WORLD_ARGS=(
       world.env_name=swm/OGBCube-v0 world.history_size=1 world.frame_skip=1
@@ -46,7 +48,8 @@ case "$TASK" in
     EVAL_CONFIG=reacher
     RESTORE_CONFIG=reacher
     DATASET_REL=reacher
-    DATA_KEYS='pixels,action,observation,qpos,qvel,goal_qpos'
+    PLANNER_DATA_KEYS='pixels,action,observation'
+    ROLLOUT_DATA_KEYS='pixels,action,observation,qpos,qvel'
     CACHE_KEYS='action'
     WORLD_ARGS=(world.env_name=swm/ReacherDMControl-v0 world.history_size=1 world.frame_skip=1 ++world.task=qpos_match)
     ;;
@@ -56,7 +59,8 @@ case "$TASK" in
     EVAL_CONFIG=tworoom
     RESTORE_CONFIG=tworoom
     DATASET_REL=tworoom
-    DATA_KEYS='pixels,action,proprio'
+    PLANNER_DATA_KEYS='pixels,action,proprio'
+    ROLLOUT_DATA_KEYS='pixels,action,proprio'
     CACHE_KEYS='action,proprio'
     WORLD_ARGS=(world.env_name=swm/TwoRoom-v1 world.history_size=1 world.frame_skip=1)
     ;;
@@ -96,10 +100,16 @@ ROLLOUT_CACHE_PATH="$TASK_ROOT/$GUIDED_SUBDIR/${TASK}_h10_rollout_cache.h5"
 RESULTS_DIR="$TASK_ROOT/eval_results/${TASK}_h10_${RUN_TAG}"
 mkdir -p "$RESULTS_DIR"
 
-DATA_ARGS=(
+PLANNER_DATA_ARGS=(
   "data.dataset.name=$DATASET_PATH"
   ++data.dataset.frameskip=5
-  "data.dataset.keys_to_load=[$DATA_KEYS]"
+  "data.dataset.keys_to_load=[$PLANNER_DATA_KEYS]"
+  "data.dataset.keys_to_cache=[$CACHE_KEYS]"
+)
+ROLLOUT_DATA_ARGS=(
+  "data.dataset.name=$DATASET_PATH"
+  ++data.dataset.frameskip=5
+  "data.dataset.keys_to_load=[$ROLLOUT_DATA_KEYS]"
   "data.dataset.keys_to_cache=[$CACHE_KEYS]"
 )
 
@@ -110,6 +120,30 @@ echo "planner epochs=$PLANNER_EPOCHS; guided epochs=$GUIDED_EPOCHS"
 echo "evaluation: H=10, receding H=10, budget=100, goal offset=50"
 [[ -f "$LEWM_CHECKPOINT" ]] || { echo "Missing LeWM checkpoint: $LEWM_CHECKPOINT" >&2; exit 1; }
 [[ -f "$DATASET_PATH.h5" ]] || { echo "Missing dataset: $DATASET_PATH.h5" >&2; exit 1; }
+
+validate_dataset_columns() {
+  local phase="$1"
+  local columns="$2"
+  conda run -n lewm --no-capture-output python -c '
+import h5py
+import sys
+path, phase, raw_columns = sys.argv[1:]
+required = [name for name in raw_columns.split(",") if name]
+with h5py.File(path, "r") as handle:
+    available = set(handle.keys())
+missing = [name for name in required if name not in available]
+if missing:
+    raise SystemExit(
+        f"{phase} requires missing HDF5 fields: {missing}; "
+        f"available fields: {sorted(available)}"
+    )
+' "$DATASET_PATH.h5" "$phase" "$columns"
+}
+
+# Fail before model construction when a task dataset schema does not match its
+# declared raw inputs. This prevents partial runs and makes test cleanup reliable.
+validate_dataset_columns planner "$PLANNER_DATA_KEYS"
+validate_dataset_columns rollout "$ROLLOUT_DATA_KEYS"
 
 PLANNER_LIMIT_ARGS=(loader.batch_size="$PLANNER_BATCH_SIZE")
 [[ -z "$PLANNER_MAX_TRAIN_BATCHES" ]] || PLANNER_LIMIT_ARGS+=(max_train_batches="$PLANNER_MAX_TRAIN_BATCHES" val_batches=1)
@@ -124,7 +158,7 @@ conda run -n lewm --no-capture-output python train_latent_planner.py \
   lewm_checkpoint="$LEWM_CHECKPOINT" seed=3072 "wandb.mode=$WANDB_MODE" \
   planner.horizon=10 planner.max_horizon=20 planner.action_block=5 \
   epochs="$PLANNER_EPOCHS" output_model_name=latent_planner \
-  subdir="$PLANNER_SUBDIR" "${DATA_ARGS[@]}" "${PLANNER_LIMIT_ARGS[@]}" "${HYDRA_ARGS[@]}"
+  subdir="$PLANNER_SUBDIR" "${PLANNER_DATA_ARGS[@]}" "${PLANNER_LIMIT_ARGS[@]}" "${HYDRA_ARGS[@]}"
 
 [[ -f "$PLANNER_CHECKPOINT" ]] || { echo "Missing planner checkpoint: $PLANNER_CHECKPOINT" >&2; exit 1; }
 
@@ -137,7 +171,7 @@ conda run -n lewm --no-capture-output python train_reference_guided_world_model.
   rollout_cache.mode=generate rollout_cache.path="$ROLLOUT_CACHE_PATH" \
   rollout_cache.collection_seed=42 rollout_cache.overwrite=false \
   rollout_cache.generate_only=false world.rollout_workers="$ROLLOUT_WORKERS" \
-  "${DATA_ARGS[@]}" "${WORLD_ARGS[@]}" "${GUIDED_LIMIT_ARGS[@]}" "${CACHE_LIMIT_ARGS[@]}" "${HYDRA_ARGS[@]}"
+  "${ROLLOUT_DATA_ARGS[@]}" "${WORLD_ARGS[@]}" "${GUIDED_LIMIT_ARGS[@]}" "${CACHE_LIMIT_ARGS[@]}" "${HYDRA_ARGS[@]}"
 
 [[ -f "$GUIDED_CHECKPOINT" ]] || { echo "Missing reference-guided checkpoint: $GUIDED_CHECKPOINT" >&2; exit 1; }
 

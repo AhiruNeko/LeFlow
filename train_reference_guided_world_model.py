@@ -915,13 +915,16 @@ def run(cfg: DictConfig):
                             lewm_continuous[:, -1:], target[:, -1:]
                         )
                     metrics.update({
+                        # Full trajectory MSE: reference-guided model versus the
+                        # frozen autoregressive LeWM baseline on identical actions.
+                        "diagnostic/model_full_mse": scalar(out["loss"]),
                         "diagnostic/lewm_continuous_mse": scalar(lewm_continuous_mse),
-                        "diagnostic/model_to_lewm_ratio": scalar(
+                        "diagnostic/model_full_advantage_over_lewm": scalar(
+                            lewm_continuous_mse - out["loss"].detach()
+                        ),
+                        "diagnostic/model_full_to_lewm_ratio": scalar(
                             out["loss"].detach()
                             / lewm_continuous_mse.clamp_min(1e-8)
-                        ),
-                        "diagnostic/model_advantage_over_lewm": scalar(
-                            lewm_continuous_mse - out["loss"].detach()
                         ),
                         "diagnostic/model_final_mse": scalar(model_final_mse),
                         "diagnostic/lewm_continuous_final_mse": scalar(
@@ -930,11 +933,16 @@ def run(cfg: DictConfig):
                         "diagnostic/model_final_advantage_over_lewm": scalar(
                             lewm_continuous_final_mse - model_final_mse
                         ),
+                        "diagnostic/model_final_to_lewm_ratio": scalar(
+                            model_final_mse / lewm_continuous_final_mse.clamp_min(1e-8)
+                        ),
                     })
                     print(
                         f"epoch={epoch} step={global_step} "
-                        f"loss={scalar(out['loss']):.6f} "
-                        f"lewm_continuous_mse={scalar(lewm_continuous_mse):.6f} "
+                        f"model_full_mse={scalar(out['loss']):.6f} "
+                        f"lewm_full_mse={scalar(lewm_continuous_mse):.6f} "
+                        f"model_final_mse={scalar(model_final_mse):.6f} "
+                        f"lewm_final_mse={scalar(lewm_continuous_final_mse):.6f} "
                         f"grad_norm={scalar(grad_norm):.4f}",
                         flush=True,
                     )
@@ -953,9 +961,10 @@ def run(cfg: DictConfig):
                 )
                 validation_log = {
                     "val/loss": validation["loss"],
+                    "val/model_full_mse": validation["loss"],
                     "val/lewm_continuous_mse": validation["lewm_mse"],
-                    "val/model_to_lewm_ratio": validation["ratio"],
-                    "val/model_advantage_over_lewm": validation["advantage"],
+                    "val/model_full_to_lewm_ratio": validation["ratio"],
+                    "val/model_full_advantage_over_lewm": validation["advantage"],
                     "val/model_final_mse": validation["final_mse"],
                     "val/lewm_continuous_final_mse": validation["lewm_final_mse"],
                     "val/model_final_advantage_over_lewm": validation["final_advantage"],
@@ -967,9 +976,11 @@ def run(cfg: DictConfig):
                     wandb_run.log(validation_log, step=global_step)
                 print(
                     f"epoch={epoch} validation "
-                    f"loss={validation['loss']:.6f} "
-                    f"ratio={validation['ratio']:.4f} "
-                    f"advantage={validation['advantage']:.6f} "
+                    f"model_full_mse={validation['loss']:.6f} "
+                    f"lewm_full_mse={validation['lewm_mse']:.6f} "
+                    f"full_advantage={validation['advantage']:.6f} "
+                    f"model_final_mse={validation['final_mse']:.6f} "
+                    f"lewm_final_mse={validation['lewm_final_mse']:.6f} "
                     f"final_advantage={validation['final_advantage']:.6f}",
                     flush=True,
                 )

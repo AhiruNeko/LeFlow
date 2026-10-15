@@ -10,5 +10,5 @@ callables:
   - method: set_target_qpos
     args:
       target_qpos:
-        source: goal_qpos
+        source: qpos
         index: -1
