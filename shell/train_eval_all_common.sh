@@ -19,6 +19,7 @@ case "$TASK" in
     TASK_ROOT="$TASKS_ROOT/pusht"
     LEWM_REL=pusht/lewm_object.ckpt
     EVAL_CONFIG=pusht
+    GUIDED_DATA=pusht
     DATASET_REL=pusht_expert_train
     PLANNER_DATA_KEYS='pixels,action,state'
     CACHE_KEYS='action,state'
@@ -27,6 +28,7 @@ case "$TASK" in
     TASK_ROOT="$TASKS_ROOT/cube"
     LEWM_REL=cube/cube_object.ckpt
     EVAL_CONFIG=cube
+    GUIDED_DATA=ogb
     DATASET_REL=ogbench/cube_single_expert
     PLANNER_DATA_KEYS='pixels,action,observation'
     CACHE_KEYS='action'
@@ -35,6 +37,7 @@ case "$TASK" in
     TASK_ROOT="$TASKS_ROOT/reacher"
     LEWM_REL=reacher/reacher_object.ckpt
     EVAL_CONFIG=reacher
+    GUIDED_DATA=dmc
     DATASET_REL=reacher
     PLANNER_DATA_KEYS='pixels,action,observation'
     CACHE_KEYS='action'
@@ -43,6 +46,7 @@ case "$TASK" in
     TASK_ROOT="$TASKS_ROOT/tworooms"
     LEWM_REL=tworooms/tworooms_object.ckpt
     EVAL_CONFIG=tworoom
+    GUIDED_DATA=tworoom
     DATASET_REL=tworoom
     PLANNER_DATA_KEYS='pixels,action,proprio'
     CACHE_KEYS='action,proprio'
@@ -143,7 +147,7 @@ echo "== Stage 2/4: collect real rollouts and train reference-guided model =="
 conda run -n lewm --no-capture-output python train_reference_guided_world_model.py \
   planner_checkpoint="$PLANNER_CHECKPOINT" lewm_checkpoint="$LEWM_CHECKPOINT" \
   seed=42 epochs="$GUIDED_EPOCHS" subdir="$GUIDED_SUBDIR" "wandb.mode=$WANDB_MODE" \
-  "data=$TASK" \
+  "data=$GUIDED_DATA" \
   rollout_cache.mode=generate rollout_cache.path="$ROLLOUT_CACHE_PATH" \
   rollout_cache.collection_seed=42 rollout_cache.overwrite=false \
   rollout_cache.generate_only=false data.world.rollout_workers="$ROLLOUT_WORKERS" \
