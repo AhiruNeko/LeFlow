@@ -1,0 +1,31 @@
+# @package _global_
+data:
+  dataset:
+    name: ogbench/cube_single_expert
+    keys_to_load: [pixels, action, observation, qpos, qvel, privileged_block_0_pos, privileged_block_0_quat]
+    keys_to_cache: [action, observation]
+  simulator_restore:
+    - method: set_state
+      args:
+        qpos: {source: qpos, index: 0}
+        qvel: {source: qvel, index: 0}
+    - method: set_target_pos
+      args:
+        cube_id: {literal: 0}
+        target_pos: {source: privileged_block_0_pos, index: -1}
+        target_quat: {source: privileged_block_0_quat, index: -1}
+
+world:
+  env_name: swm/OGBCube-v0
+  num_envs: 4
+  max_episode_steps: 50
+  history_size: 1
+  frame_skip: 1
+  rollout_workers: 8
+  env_type: single
+  ob_type: states
+  multiview: false
+  width: 224
+  height: 224
+  visualize_info: false
+  terminate_at_goal: true

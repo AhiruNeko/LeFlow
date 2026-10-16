@@ -1,0 +1,23 @@
+# @package _global_
+data:
+  dataset:
+    name: reacher
+    keys_to_load: [pixels, action, observation, qpos, qvel]
+    keys_to_cache: [action, observation]
+  simulator_restore:
+    - method: set_state
+      args:
+        qpos: {source: qpos, index: 0}
+        qvel: {source: qvel, index: 0}
+    - method: set_target_qpos
+      args:
+        target_qpos: {source: qpos, index: -1}
+
+world:
+  env_name: swm/ReacherDMControl-v0
+  num_envs: 4
+  max_episode_steps: 50
+  history_size: 1
+  frame_skip: 1
+  rollout_workers: 8
+  task: hard

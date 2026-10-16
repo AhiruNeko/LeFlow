@@ -1,6 +1,8 @@
 # @package _global_
 defaults:
-  - /data: pusht
+  # A task launcher must select one profile, e.g. data=tworooms.
+  # The null slot avoids loading PushT before Hydra applies that override.
+  - optional /data: null
   - _self_
 
 planner_checkpoint: null
