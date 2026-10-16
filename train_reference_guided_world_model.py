@@ -259,6 +259,11 @@ def _restore_from_state_or_proprio(base, chunk):
     source = "state" if "state" in chunk else "proprio" if "proprio" in chunk else None
     if source is None:
         return False
+    # Cube exposes a merged proprio key but uses a different simulator API.
+    # Only environments implementing the common state/goal-state pair use
+    # this automatic path; all others fall through to data.simulator_restore.
+    if not (hasattr(base, "_set_state") and hasattr(base, "_set_goal_state")):
+        return False
     values = np.asarray(chunk[source])
     if len(values) < 1:
         raise ValueError(f"Restore source {source!r} has no recorded steps.")
