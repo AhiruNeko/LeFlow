@@ -248,10 +248,21 @@ def _restore_argument(spec, chunk):
     return np.asarray(chunk[source][int(spec.get("index", 0))])
 
 
-def restore_world_from_chunks(world, chunks, restore_callables):
-    """Reset environments and restore task state using declarative callables."""
-    if not restore_callables:
-        raise ValueError("rollout_restore.callables must not be empty.")
+def _restore_from_state_or_proprio(base, chunk):
+    """Restore common environments from the first and last recorded state."""
+    source = "state" if "state" in chunk else "proprio" if "proprio" in chunk else None
+    if source is None:
+        return False
+    values = np.asarray(chunk[source])
+    if len(values) < 1:
+        raise ValueError(f"Restore source {source!r} has no recorded steps.")
+    base._set_state(state=values[0])
+    base._set_goal_state(goal_state=values[-1])
+    return True
+
+
+def restore_world_from_chunks(world, chunks, task_restore=None):
+    """Reset worlds using state/proprio, or a task adapter in data config."""
     seeds = []
     for chunk in chunks:
         seed = chunk.get("seed")
@@ -259,7 +270,15 @@ def restore_world_from_chunks(world, chunks, restore_callables):
     world.reset(seed=seeds, options={})
     for env, chunk in zip(world.envs.unwrapped.envs, chunks):
         base = env.unwrapped
-        for callable_cfg in restore_callables:
+        # State takes precedence; TwoRooms falls back to proprio automatically.
+        if _restore_from_state_or_proprio(base, chunk):
+            continue
+        if not task_restore:
+            raise KeyError(
+                "Dataset has neither 'state' nor 'proprio'; configure "
+                "data.simulator_restore for this environment."
+            )
+        for callable_cfg in task_restore:
             method_name = callable_cfg["method"]
             if method_name == "set_target_qpos":
                 _install_reacher_target_qpos_compat()
@@ -271,12 +290,12 @@ def restore_world_from_chunks(world, chunks, restore_callables):
 
 
 def init_world_from_dataset(
-    world, raw_dataset, episodes, starts, goal_offset, restore_callables
+    world, raw_dataset, episodes, starts, goal_offset, task_restore
 ):
     episodes = np.asarray(episodes, dtype=np.int64)
     starts = np.asarray(starts, dtype=np.int64)
     chunks = raw_dataset.load_chunk(episodes, starts, starts + int(goal_offset))
-    restore_world_from_chunks(world, chunks, restore_callables)
+    restore_world_from_chunks(world, chunks, task_restore)
 
 
 def _rollout_worker_main(
@@ -287,7 +306,7 @@ def _rollout_worker_main(
     world_kwargs,
     image_shape,
     action_block,
-    restore_callables,
+    task_restore,
 ):
     """CPU-only persistent worker for one shard of synchronous vector envs."""
     os.environ.setdefault("OMP_NUM_THREADS", "1")
@@ -313,7 +332,7 @@ def _rollout_worker_main(
                     world_size = shard_size
 
                 init_world_from_dataset(
-                    world, raw_dataset, episodes, starts, goal_offset, restore_callables
+                    world, raw_dataset, episodes, starts, goal_offset, task_restore
                 )
                 segment_frames = []
                 for segment in range(horizon):
@@ -354,12 +373,12 @@ class SimulatorRolloutPool:
         world_kwargs,
         image_shape,
         action_block,
-        restore_callables,
+        task_restore,
     ):
         if num_workers < 1:
             raise ValueError("num_workers must be positive")
         self.num_workers = int(num_workers)
-        self.restore_callables = restore_callables
+        self.task_restore = task_restore
         self._context = mp.get_context("spawn")
         self._result_queue = self._context.Queue()
         self._task_queues = [self._context.Queue(maxsize=1) for _ in range(num_workers)]
@@ -375,7 +394,7 @@ class SimulatorRolloutPool:
                     world_kwargs,
                     image_shape,
                     action_block,
-                    restore_callables,
+                    task_restore,
                 ),
                 daemon=True,
             )
@@ -438,7 +457,7 @@ def encode_world_pixels(runtime, world, transform, device):
 def simulator_targets(
     runtime, world, raw_dataset, episodes, starts, reference_paths, actions,
     *, goal_offset, image_tx, action_mean, action_std, device, rollout_pool=None,
-    restore_callables=None,
+    task_restore=None,
 ):
     batch, candidates, horizon, action_dim = actions.shape
     n = batch * candidates
@@ -472,7 +491,7 @@ def simulator_targets(
         np.repeat(episodes, candidates),
         np.repeat(starts, candidates),
         goal_offset,
-        restore_callables,
+        task_restore,
     )
     targets = []
     for segment in range(horizon):
@@ -605,8 +624,8 @@ def generate_rollout_cache(
                     action_std=action_std,
                     device=device,
                     rollout_pool=rollout_pool,
-                    restore_callables=OmegaConf.to_container(
-                        cfg.rollout_restore.callables, resolve=True
+                    task_restore=OmegaConf.to_container(
+                        cfg.data.get("simulator_restore", []), resolve=True
                     ),
                 )
                 records = paths.size(0)
@@ -661,8 +680,8 @@ def create_rollout_backend(cfg, horizon, action_block):
             world_kwargs=world_cfg,
             image_shape=(224, 224),
             action_block=action_block,
-            restore_callables=OmegaConf.to_container(
-                cfg.rollout_restore.callables, resolve=True
+            task_restore=OmegaConf.to_container(
+                cfg.data.get("simulator_restore", []), resolve=True
             ),
         )
         return None, pool
@@ -705,7 +724,7 @@ def load_cache_components(cfg, device):
     return model, lewm, cache_dataset, metadata
 
 
-@hydra.main(version_base=None, config_path="./config/train", config_name="reference_guided_world_model")
+@hydra.main(version_base=None, config_path="./config", config_name="train/reference_guided_world_model")
 def run(cfg: DictConfig):
     device = torch.device(cfg.device if torch.cuda.is_available() else "cpu")
     set_random_seed(cfg.seed)
@@ -880,8 +899,8 @@ def run(cfg: DictConfig):
                             action_std=action_std,
                             device=device,
                             rollout_pool=rollout_pool,
-                            restore_callables=OmegaConf.to_container(
-                                cfg.rollout_restore.callables, resolve=True
+                            task_restore=OmegaConf.to_container(
+                                cfg.data.get("simulator_restore", []), resolve=True
                             ),
                         )
                     flat_paths = paths[:, 0]
