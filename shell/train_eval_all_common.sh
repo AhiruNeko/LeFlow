@@ -146,7 +146,7 @@ conda run -n lewm --no-capture-output python train_reference_guided_world_model.
   "data=$TASK" \
   rollout_cache.mode=generate rollout_cache.path="$ROLLOUT_CACHE_PATH" \
   rollout_cache.collection_seed=42 rollout_cache.overwrite=false \
-  rollout_cache.generate_only=false world.rollout_workers="$ROLLOUT_WORKERS" \
+  rollout_cache.generate_only=false data.world.rollout_workers="$ROLLOUT_WORKERS" \
   "${GUIDED_LIMIT_ARGS[@]}" "${CACHE_LIMIT_ARGS[@]}" "${HYDRA_ARGS[@]}"
 
 [[ -f "$GUIDED_CHECKPOINT" ]] || { echo "Missing reference-guided checkpoint: $GUIDED_CHECKPOINT" >&2; exit 1; }

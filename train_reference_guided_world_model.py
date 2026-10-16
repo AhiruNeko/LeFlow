@@ -668,7 +668,7 @@ def checkpoint(model, cfg, path, metadata):
 
 
 def create_rollout_backend(cfg, horizon, action_block):
-    world_cfg = OmegaConf.to_container(cfg.world, resolve=True)
+    world_cfg = OmegaConf.to_container(cfg.data.world, resolve=True)
     rollout_workers = int(world_cfg.pop("rollout_workers", 0))
     world_cfg["max_episode_steps"] = max(
         world_cfg["max_episode_steps"], horizon * action_block
@@ -724,7 +724,7 @@ def load_cache_components(cfg, device):
     return model, lewm, cache_dataset, metadata
 
 
-@hydra.main(version_base=None, config_path="./config", config_name="train/reference_guided_world_model")
+@hydra.main(version_base=None, config_path="./config/train", config_name="reference_guided_world_model")
 def run(cfg: DictConfig):
     device = torch.device(cfg.device if torch.cuda.is_available() else "cpu")
     set_random_seed(cfg.seed)
