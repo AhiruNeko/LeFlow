@@ -51,7 +51,8 @@ rollout_cache:
   # online: original on-policy rollout every update.
   # generate: create the complete HDF5 cache once, then train from it.
   # use: train directly from an existing cache; only LeWM + this model load.
-  mode: online
+  # Reference-guided runs collect the frozen simulator cache before offline training.
+  mode: generate
   path: null
   overwrite: false
   # Independent reproducible seed for frozen planner/IDM/simulator collection.
