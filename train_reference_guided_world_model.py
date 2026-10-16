@@ -168,6 +168,12 @@ def scalar(value):
     return float(value.detach()) if torch.is_tensor(value) else float(value)
 
 
+def simulator_restore_config(cfg):
+    """Return a task adapter only when the selected data profile defines one."""
+    restore = cfg.data.get("simulator_restore")
+    return [] if restore is None else OmegaConf.to_container(restore, resolve=True)
+
+
 def set_random_seed(seed):
     """Seed every random source used by cache collection or model training."""
     seed = int(seed)
@@ -624,9 +630,7 @@ def generate_rollout_cache(
                     action_std=action_std,
                     device=device,
                     rollout_pool=rollout_pool,
-                    task_restore=OmegaConf.to_container(
-                        cfg.data.get("simulator_restore", []), resolve=True
-                    ),
+                    task_restore=simulator_restore_config(cfg),
                 )
                 records = paths.size(0)
                 end = offset + records
@@ -680,9 +684,7 @@ def create_rollout_backend(cfg, horizon, action_block):
             world_kwargs=world_cfg,
             image_shape=(224, 224),
             action_block=action_block,
-            task_restore=OmegaConf.to_container(
-                cfg.data.get("simulator_restore", []), resolve=True
-            ),
+            task_restore=simulator_restore_config(cfg),
         )
         return None, pool
 
@@ -899,9 +901,7 @@ def run(cfg: DictConfig):
                             action_std=action_std,
                             device=device,
                             rollout_pool=rollout_pool,
-                            task_restore=OmegaConf.to_container(
-                                cfg.data.get("simulator_restore", []), resolve=True
-                            ),
+                            task_restore=simulator_restore_config(cfg),
                         )
                     flat_paths = paths[:, 0]
                     flat_actions = actions[:, 0]
