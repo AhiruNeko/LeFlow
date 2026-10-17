@@ -1,0 +1,82 @@
+{
+  "settings": {
+    "planner_checkpoint": "/root/projects/pusht/leflow/pusht/latent_planner_h10.pt",
+    "reference_guided_checkpoint": "/root/projects/pusht/reference_guided_world_model/pusht_h10/reference_guided_world_model.pt",
+    "lewm_checkpoint": "/root/projects/pusht/pusht/lewm_object.ckpt",
+    "dataset_name": "pusht_expert_train",
+    "cache_dir": null,
+    "tasks": 10,
+    "candidates": 64,
+    "goal_offset_steps": 50,
+    "flow_steps": 16,
+    "history_size": 3,
+    "seed": 42,
+    "img_size": 224,
+    "device": "cuda",
+    "output_dir": "analysis/reference_guided_correlation"
+  },
+  "global_candidate_correlation": {
+    "lewm_pearson": 0.8160052743305445,
+    "guided_pearson": 0.7914017700843436,
+    "lewm_spearman": 0.46140663408075616,
+    "guided_spearman": 0.6052911270225323
+  },
+  "per_task_ranking_metrics": {
+    "lewm_pearson": {
+      "mean": 0.46618094444323754,
+      "sample_std": 0.4293774555612921,
+      "count": 10
+    },
+    "guided_pearson": {
+      "mean": 0.562781302572179,
+      "sample_std": 0.2958668270136579,
+      "count": 10
+    },
+    "lewm_spearman": {
+      "mean": 0.3933765458226838,
+      "sample_std": 0.46673109868418083,
+      "count": 10
+    },
+    "guided_spearman": {
+      "mean": 0.5072987385293571,
+      "sample_std": 0.3330898157729699,
+      "count": 10
+    },
+    "lewm_selected_true_goal_mse": {
+      "mean": 0.20918528754264115,
+      "sample_std": 0.31822877156182594,
+      "count": 10
+    },
+    "guided_selected_true_goal_mse": {
+      "mean": 0.1486139303073287,
+      "sample_std": 0.18002733517559505,
+      "count": 10
+    },
+    "oracle_true_goal_mse": {
+      "mean": 0.04449566570110619,
+      "sample_std": 0.09202445332024348,
+      "count": 10
+    },
+    "lewm_selection_regret": {
+      "mean": 0.16468962151557207,
+      "sample_std": 0.23063111938779413,
+      "count": 10
+    },
+    "guided_selection_regret": {
+      "mean": 0.10411826530471444,
+      "sample_std": 0.11868089684229055,
+      "count": 10
+    },
+    "lewm_top1_match": {
+      "mean": 0.0,
+      "sample_std": 0.0,
+      "count": 10
+    },
+    "guided_top1_match": {
+      "mean": 0.1,
+      "sample_std": 0.31622776601683794,
+      "count": 10
+    }
+  },
+  "interpretation": "Higher Pearson/Spearman and top-1 match are better. Lower selected true goal MSE and selection regret are better."
+}
