@@ -6,8 +6,8 @@ defaults:
 
 
 planner_checkpoint: null
-# Required only for rollout_cache.mode=use. It must match the LeWM used to
-# create the cache; planner and IDM are not loaded in cache-only training.
+# Optional provenance override saved with rollout caches. The staged trainer
+# always loads LeWM through planner_checkpoint for distillation and validation.
 lewm_checkpoint: null
 output_model_name: reference_guided_world_model
 subdir: reference_guided_world_model/${now:%Y-%m-%d_%H-%M-%S}
@@ -26,6 +26,17 @@ validation:
 log_interval: 10
 max_train_batches: null
 grad_clip_norm: 1.0
+
+# One deterministic global split: inexpensive LeWM distillation uses the first
+# partition; simulator rollout/cached fine-tuning uses only the second.
+staged_training:
+  distillation_fraction: 0.9
+  fine_tune_fraction: 0.1
+  # Defaults inherit epochs so legacy epochs=N overrides keep both stages aligned.
+  distillation_epochs: ${epochs}
+  fine_tune_epochs: ${epochs}
+  # Split the simulator-cached fine-tuning partition again into train/validation.
+  fine_tune_train_split: 0.9
 
 loader:
   batch_size: 128
