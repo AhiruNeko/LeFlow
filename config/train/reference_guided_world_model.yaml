@@ -39,9 +39,11 @@ staged_training:
   distillation_checkpoint: null
   distillation_fraction: 0.9
   fine_tune_fraction: 0.1
-  # Defaults inherit epochs so legacy epochs=N overrides keep both stages aligned.
+  # Defaults retain compatibility with legacy epochs=N and optimizer.lr=N.
   distillation_epochs: ${epochs}
   fine_tune_epochs: ${epochs}
+  distillation_lr: ${optimizer.lr}
+  fine_tune_lr: ${optimizer.lr}
   # Split the simulator-cached fine-tuning partition again into train/validation.
   fine_tune_train_split: 0.9
 

@@ -1056,9 +1056,14 @@ def run(cfg: DictConfig):
             flush=True,
         )
 
-        optimizer = torch.optim.AdamW(
-            model.parameters(), lr=cfg.optimizer.lr, weight_decay=cfg.optimizer.weight_decay
-        )
+        def make_stage_optimizer(learning_rate):
+            # Do not carry Adam moments across objectives: distillation and
+            # real-rollout fine-tuning are independently configured stages.
+            return torch.optim.AdamW(
+                model.parameters(), lr=float(learning_rate),
+                weight_decay=cfg.optimizer.weight_decay,
+            )
+
         run_dir = Path(stablewm_cache_dir(sub_folder="checkpoints"), cfg.subdir)
         run_dir.mkdir(parents=True, exist_ok=True)
         OmegaConf.save(cfg, run_dir / "reference_guided_world_model_config.yaml")
@@ -1068,6 +1073,7 @@ def run(cfg: DictConfig):
         best_fine_tune_validation = float("inf")
         try:
             if run_distillation:
+                optimizer = make_stage_optimizer(stages.distillation_lr)
                 for epoch in range(1, int(stages.distillation_epochs) + 1):
                     model.train()
                     for batch_index, batch in enumerate(distill_loader, start=1):
@@ -1092,6 +1098,7 @@ def run(cfg: DictConfig):
                             values = {
                                 "distillation/train/loss": scalar(output["loss"]),
                                 "distillation/train/grad_norm": scalar(grad_norm),
+                                "distillation/train/lr": optimizer.param_groups[0]["lr"],
                                 "distillation/epoch": epoch,
                             }
                             if wandb_run is not None:
@@ -1124,6 +1131,7 @@ def run(cfg: DictConfig):
                 )
 
             if run_fine_tune:
+                optimizer = make_stage_optimizer(stages.fine_tune_lr)
                 for epoch in range(1, int(stages.fine_tune_epochs) + 1):
                     model.train()
                     for batch_index, batch in enumerate(fine_tune_loader, start=1):
@@ -1152,6 +1160,7 @@ def run(cfg: DictConfig):
                         values.update({
                             "fine_tune/train/loss": scalar(output["loss"]),
                             "fine_tune/train/grad_norm": scalar(grad_norm),
+                            "fine_tune/train/lr": optimizer.param_groups[0]["lr"],
                         })
                         if wandb_run is not None:
                             wandb_run.log(values, step=global_step)
