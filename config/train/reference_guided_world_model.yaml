@@ -30,6 +30,13 @@ grad_clip_norm: 1.0
 # One deterministic global split: inexpensive LeWM distillation uses the first
 # partition; simulator rollout/cached fine-tuning uses only the second.
 staged_training:
+  # Each phase is independently switchable. When cache generation is disabled,
+  # rollout_cache.path is read as an existing completed cache.
+  generate_rollout_cache: true
+  distillation: true
+  fine_tune: true
+  # Required when distillation=false and fine_tune=true.
+  distillation_checkpoint: null
   distillation_fraction: 0.9
   fine_tune_fraction: 0.1
   # Defaults inherit epochs so legacy epochs=N overrides keep both stages aligned.
@@ -59,10 +66,8 @@ wandb:
   mode: online
 
 rollout_cache:
-  # online: original on-policy rollout every update.
-  # generate: create the complete HDF5 cache once, then train from it.
-  # use: train directly from an existing cache; only LeWM + this model load.
-  # Reference-guided runs collect the frozen simulator cache before offline training.
+  # Controlled by staged_training.generate_rollout_cache. mode is retained only
+  # for compatibility with older launch commands and does not select a stage.
   mode: generate
   path: null
   overwrite: false

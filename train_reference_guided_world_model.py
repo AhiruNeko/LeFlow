@@ -758,10 +758,12 @@ def _mse_per_record(predicted, target):
 
 
 def _pearson_correlation(x, y):
-    if len(x) < 2:
+    if not x or not y:
         return float("nan")
     x = torch.cat(x).double()
     y = torch.cat(y).double()
+    if x.numel() < 2 or y.numel() < 2:
+        return float("nan")
     x_centered = x - x.mean()
     y_centered = y - y.mean()
     denominator = x_centered.square().sum().sqrt() * y_centered.square().sum().sqrt()
@@ -770,46 +772,76 @@ def _pearson_correlation(x, y):
     return float((x_centered * y_centered).sum() / denominator)
 
 
+REAL_ROLLOUT_METRIC_KEYS = (
+    "model_full_mse",
+    "lewm_full_mse",
+    "model_final_mse",
+    "lewm_final_mse",
+    "model_full_advantage_over_lewm",
+    "model_final_advantage_over_lewm",
+    "model_to_lewm_full_ratio",
+    "model_to_lewm_final_ratio",
+    "model_goal_to_executed_goal_correlation",
+    "lewm_goal_to_executed_goal_correlation",
+)
+
+
+@torch.no_grad()
+def real_rollout_batch_metrics(trajectory, lewm, reference_path, actions, target):
+    """Metrics against real rollout targets; LeWM is always autoregressive."""
+    lewm_continuous = continuous_lewm_predictions(lewm, reference_path, actions)
+    goal = reference_path[:, -1:]
+    model_full_mse = continuous_trajectory_loss(trajectory, target)
+    lewm_full_mse = continuous_trajectory_loss(lewm_continuous, target)
+    model_final_mse = continuous_trajectory_loss(trajectory[:, -1:], target[:, -1:])
+    lewm_final_mse = continuous_trajectory_loss(lewm_continuous[:, -1:], target[:, -1:])
+    metrics = {
+        "model_full_mse": model_full_mse,
+        "lewm_full_mse": lewm_full_mse,
+        "model_final_mse": model_final_mse,
+        "lewm_final_mse": lewm_final_mse,
+        "model_full_advantage_over_lewm": lewm_full_mse - model_full_mse,
+        "model_final_advantage_over_lewm": lewm_final_mse - model_final_mse,
+        "model_to_lewm_full_ratio": model_full_mse / lewm_full_mse.clamp_min(1e-8),
+        "model_to_lewm_final_ratio": model_final_mse / lewm_final_mse.clamp_min(1e-8),
+        "distillation_mse": continuous_trajectory_loss(trajectory, lewm_continuous),
+        "model_goal_errors": _mse_per_record(trajectory[:, -1:], goal),
+        "lewm_goal_errors": _mse_per_record(lewm_continuous[:, -1:], goal),
+        "executed_goal_errors": _mse_per_record(target[:, -1:], goal),
+    }
+    metrics["model_goal_to_executed_goal_correlation"] = _pearson_correlation(
+        [metrics["model_goal_errors"]], [metrics["executed_goal_errors"]]
+    )
+    metrics["lewm_goal_to_executed_goal_correlation"] = _pearson_correlation(
+        [metrics["lewm_goal_errors"]], [metrics["executed_goal_errors"]]
+    )
+    return metrics
+
+
 @torch.no_grad()
 def validate_against_real_rollouts(model, lewm, loader, device, max_batches=None):
-    """Compare both predictors against simulator targets and task goals."""
+    """Aggregate real-rollout metrics and correlation over a validation set."""
     model.eval()
-    totals = {
-        "model_full_mse": 0.0,
-        "lewm_full_mse": 0.0,
-        "model_final_mse": 0.0,
-        "lewm_final_mse": 0.0,
-        "distillation_mse": 0.0,
-        "model_final_goal_mse": 0.0,
-        "lewm_final_goal_mse": 0.0,
-        "executed_final_goal_mse": 0.0,
-    }
+    totals = {key: 0.0 for key in REAL_ROLLOUT_METRIC_KEYS[:4]}
     model_goal_errors, lewm_goal_errors, executed_goal_errors = [], [], []
+    distillation_total = 0.0
     records = 0
     for batch_index, batch in enumerate(loader, start=1):
         reference_path = batch["reference_path"].to(device, non_blocking=True)
         actions = batch["actions"].to(device, non_blocking=True)
         target = batch["executed_target"].to(device, non_blocking=True)
         output = reference_guided_training_step(model, lewm, reference_path, actions, target)
-        lewm_continuous = continuous_lewm_predictions(lewm, reference_path, actions)
-        goal = reference_path[:, -1:]
-        values = {
-            "model_full_mse": continuous_trajectory_loss(output["trajectory"], target),
-            "lewm_full_mse": continuous_trajectory_loss(lewm_continuous, target),
-            "model_final_mse": continuous_trajectory_loss(output["trajectory"][:, -1:], target[:, -1:]),
-            "lewm_final_mse": continuous_trajectory_loss(lewm_continuous[:, -1:], target[:, -1:]),
-            "distillation_mse": continuous_trajectory_loss(output["trajectory"], lewm_continuous),
-            "model_final_goal_mse": continuous_trajectory_loss(output["trajectory"][:, -1:], goal),
-            "lewm_final_goal_mse": continuous_trajectory_loss(lewm_continuous[:, -1:], goal),
-            "executed_final_goal_mse": continuous_trajectory_loss(target[:, -1:], goal),
-        }
+        values = real_rollout_batch_metrics(
+            output["trajectory"], lewm, reference_path, actions, target
+        )
         batch_records = reference_path.size(0)
         records += batch_records
-        for key, value in values.items():
-            totals[key] += scalar(value) * batch_records
-        model_goal_errors.append(_mse_per_record(output["trajectory"][:, -1:], goal).cpu())
-        lewm_goal_errors.append(_mse_per_record(lewm_continuous[:, -1:], goal).cpu())
-        executed_goal_errors.append(_mse_per_record(target[:, -1:], goal).cpu())
+        for key in totals:
+            totals[key] += scalar(values[key]) * batch_records
+        distillation_total += scalar(values["distillation_mse"]) * batch_records
+        model_goal_errors.append(values["model_goal_errors"].cpu())
+        lewm_goal_errors.append(values["lewm_goal_errors"].cpu())
+        executed_goal_errors.append(values["executed_goal_errors"].cpu())
         if max_batches and batch_index >= max_batches:
             break
 
@@ -817,10 +849,13 @@ def validate_against_real_rollouts(model, lewm, loader, device, max_batches=None
         raise RuntimeError("Validation loader produced no records.")
     metrics = {key: value / records for key, value in totals.items()}
     metrics.update({
+        "model_full_advantage_over_lewm": metrics["lewm_full_mse"] - metrics["model_full_mse"],
+        "model_final_advantage_over_lewm": metrics["lewm_final_mse"] - metrics["model_final_mse"],
         "model_to_lewm_full_ratio": metrics["model_full_mse"] / max(metrics["lewm_full_mse"], 1e-8),
         "model_to_lewm_final_ratio": metrics["model_final_mse"] / max(metrics["lewm_final_mse"], 1e-8),
         "model_goal_to_executed_goal_correlation": _pearson_correlation(model_goal_errors, executed_goal_errors),
         "lewm_goal_to_executed_goal_correlation": _pearson_correlation(lewm_goal_errors, executed_goal_errors),
+        "distillation_mse": distillation_total / records,
         "records": records,
     })
     return metrics
@@ -842,9 +877,19 @@ def save_stage_checkpoint(model, cfg, run_dir, metadata, stage, suffix):
     checkpoint(model, cfg, run_dir / f"{cfg.output_model_name}_{suffix}.pt", payload)
 
 
-def log_real_rollout_validation(stage, epoch, metrics, wandb_run, step):
-    values = {f"{stage}/val/{key}": value for key, value in metrics.items()}
+def wandb_real_rollout_metrics(stage, split, metrics, epoch):
+    """Only expose requested real-rollout comparisons to W&B."""
+    values = {
+        f"{stage}/{split}/{key}": scalar(metrics[key])
+        for key in REAL_ROLLOUT_METRIC_KEYS
+    }
     values[f"{stage}/epoch"] = epoch
+    return values
+
+
+def log_real_rollout_validation(stage, epoch, metrics, wandb_run, step):
+    values = wandb_real_rollout_metrics(stage, "val", metrics, epoch)
+    values[f"{stage}/val/records"] = metrics["records"]
     if wandb_run is not None:
         wandb_run.log(values, step=step)
     print(
@@ -853,180 +898,298 @@ def log_real_rollout_validation(stage, epoch, metrics, wandb_run, step):
         f"lewm_full_mse={metrics['lewm_full_mse']:.6f} "
         f"model_final_mse={metrics['model_final_mse']:.6f} "
         f"lewm_final_mse={metrics['lewm_final_mse']:.6f} "
-        f"full_ratio={metrics['model_to_lewm_full_ratio']:.6f} "
-        f"final_ratio={metrics['model_to_lewm_final_ratio']:.6f} "
-        f"model_goal_corr={metrics['model_goal_to_executed_goal_correlation']:.6f} "
-        f"lewm_goal_corr={metrics['lewm_goal_to_executed_goal_correlation']:.6f}",
+        f"full_advantage={metrics['model_full_advantage_over_lewm']:.6f} "
+        f"final_advantage={metrics['model_final_advantage_over_lewm']:.6f}",
         flush=True,
     )
 
 
 @hydra.main(version_base=None, config_path="./config/train", config_name="reference_guided_world_model")
 def run(cfg: DictConfig):
-    """Distil continuous LeWM rollouts, then fine-tune on real simulator rollouts."""
+    """Optional cache generation, LeWM distillation, and real-rollout fine-tuning."""
     device = torch.device(cfg.device if torch.cuda.is_available() else "cpu")
     set_random_seed(cfg.seed)
-    cache_mode = str(cfg.rollout_cache.mode).lower()
-    if cache_mode not in {"generate", "use"}:
-        raise ValueError("The staged trainer requires rollout_cache.mode=generate or use.")
-    if not cfg.planner_checkpoint:
-        raise ValueError("planner_checkpoint is required for staged distillation.")
+    stages = cfg.staged_training
+    generate_cache = bool(stages.generate_rollout_cache)
+    run_distillation = bool(stages.distillation)
+    run_fine_tune = bool(stages.fine_tune)
+    if not (generate_cache or run_distillation or run_fine_tune):
+        raise ValueError("Enable at least one staged_training phase.")
 
-    distill_fraction = float(cfg.staged_training.distillation_fraction)
-    fine_tune_fraction = float(cfg.staged_training.fine_tune_fraction)
+    distill_fraction = float(stages.distillation_fraction)
+    fine_tune_fraction = float(stages.fine_tune_fraction)
     if not np.isclose(distill_fraction + fine_tune_fraction, 1.0):
         raise ValueError("staged_training fractions must sum to one.")
 
-    model, runtime = ReferenceGuidedWorldModel.from_planner_checkpoint(
-        cfg.planner_checkpoint, device=device
-    )
-    runtime.eval().requires_grad_(False)
-    lewm = runtime.lewm
-    payload = torch.load(cfg.planner_checkpoint, map_location="cpu", weights_only=False)
-    planner_cfg = payload.get("config", {}).get("planner", {})
-    if "horizon" not in planner_cfg:
-        raise KeyError("Planner checkpoint has no config.planner.horizon metadata.")
-    horizon = int(planner_cfg["horizon"])
-    if horizon > model.architecture.max_horizon:
-        raise ValueError("Planner training horizon exceeds checkpoint max_horizon.")
-    with open_dict(cfg):
-        cfg.data.dataset.frameskip = int(runtime.action_block)
-        cfg.data.dataset.num_steps = horizon + 1
-
-    raw_dataset, full_source_dataset = build_datasets(cfg)
-    distill_dataset, fine_tune_source_dataset = split_dataset(
-        full_source_dataset, distill_fraction, cfg.seed, name="distillation/fine-tune"
-    )
-    print(
-        f"staged_split total={len(full_source_dataset)} distillation={len(distill_dataset)} "
-        f"fine_tune_rollout={len(fine_tune_source_dataset)} "
-        f"distillation_fraction={distill_fraction:.6f} fine_tune_fraction={fine_tune_fraction:.6f}",
-        flush=True,
-    )
-
-    cache_metadata = {"mode": cache_mode, "horizon": horizon}
+    runtime = raw_dataset = full_source_dataset = None
+    distill_dataset = fine_tune_source_dataset = None
     world = rollout_pool = None
-    if cache_mode == "generate":
-        set_random_seed(cfg.rollout_cache.collection_seed)
-        action_data = torch.as_tensor(raw_dataset.get_col_data("action"), dtype=torch.float32)
-        action_data = action_data[~torch.isnan(action_data).any(dim=1)]
-        action_mean = action_data.mean(0).to(device)
-        action_std = action_data.std(0).clamp_min(1e-6).to(device)
-        world, rollout_pool = create_rollout_backend(cfg, horizon, runtime.action_block)
-        real_rollout_dataset = generate_rollout_cache(
-            cfg=cfg, runtime=runtime, raw_dataset=raw_dataset,
-            source_dataset=fine_tune_source_dataset, horizon=horizon,
-            action_mean=action_mean, action_std=action_std, world=world,
-            rollout_pool=rollout_pool, pixel_tx=image_transform(cfg.img_size), device=device,
+    need_source_data = generate_cache or run_distillation
+    if need_source_data:
+        if not cfg.planner_checkpoint:
+            raise ValueError("planner_checkpoint is required for cache generation or distillation.")
+        model, runtime = ReferenceGuidedWorldModel.from_planner_checkpoint(
+            cfg.planner_checkpoint, device=device
         )
-        close_rollout_backend(world, rollout_pool)
-        world = rollout_pool = None
+        runtime.eval().requires_grad_(False)
+        lewm = runtime.lewm
+        payload = torch.load(cfg.planner_checkpoint, map_location="cpu", weights_only=False)
+        planner_cfg = payload.get("config", {}).get("planner", {})
+        if "horizon" not in planner_cfg:
+            raise KeyError("Planner checkpoint has no config.planner.horizon metadata.")
+        horizon = int(planner_cfg["horizon"])
+        if horizon > model.architecture.max_horizon:
+            raise ValueError("Planner horizon exceeds checkpoint max_horizon.")
+        with open_dict(cfg):
+            cfg.data.dataset.frameskip = int(runtime.action_block)
+            cfg.data.dataset.num_steps = horizon + 1
+        raw_dataset, full_source_dataset = build_datasets(cfg)
+        distill_dataset, fine_tune_source_dataset = split_dataset(
+            full_source_dataset, distill_fraction, cfg.seed,
+            name="distillation/fine-tune",
+        )
+        print(
+            f"staged_split total={len(full_source_dataset)} "
+            f"distillation={len(distill_dataset)} "
+            f"fine_tune_rollout={len(fine_tune_source_dataset)} "
+            f"distillation_fraction={distill_fraction:.6f} "
+            f"fine_tune_fraction={fine_tune_fraction:.6f}", flush=True,
+        )
+    else:
+        model = lewm = horizon = None
+
+    try:
+        if generate_cache:
+            if runtime is None:
+                raise AssertionError("Cache generation requires a planner runtime.")
+            set_random_seed(cfg.rollout_cache.collection_seed)
+            action_data = torch.as_tensor(raw_dataset.get_col_data("action"), dtype=torch.float32)
+            action_data = action_data[~torch.isnan(action_data).any(dim=1)]
+            action_mean = action_data.mean(0).to(device)
+            action_std = action_data.std(0).clamp_min(1e-6).to(device)
+            world, rollout_pool = create_rollout_backend(cfg, horizon, runtime.action_block)
+            real_rollout_dataset = generate_rollout_cache(
+                cfg=cfg, runtime=runtime, raw_dataset=raw_dataset,
+                source_dataset=fine_tune_source_dataset, horizon=horizon,
+                action_mean=action_mean, action_std=action_std, world=world,
+                rollout_pool=rollout_pool, pixel_tx=image_transform(cfg.img_size),
+                device=device,
+            )
+            close_rollout_backend(world, rollout_pool)
+            world = rollout_pool = None
+            set_random_seed(cfg.seed)
+        else:
+            real_rollout_dataset = RolloutCacheDataset(rollout_cache_path(cfg))
+            if fine_tune_source_dataset is not None:
+                expected_records = len(fine_tune_source_dataset)
+                max_records = cfg.rollout_cache.get("max_records")
+                if max_records is not None:
+                    expected_records = min(expected_records, int(max_records))
+                cached_records = real_rollout_dataset.metadata.get("source_records")
+                if cached_records is None or int(cached_records) != expected_records:
+                    raise ValueError(
+                        "The selected cache was not generated from this run's "
+                        "fine-tuning split. Use the matching split settings or regenerate it."
+                    )
+
+        cache_metadata = {
+            key: _decode_h5_attribute(value)
+            for key, value in real_rollout_dataset.metadata.items()
+        }
+        cache_metadata.update({
+            "distillation_fraction": distill_fraction,
+            "fine_tune_fraction": fine_tune_fraction,
+        })
+        if horizon is None:
+            horizon = int(cache_metadata["horizon"])
+        if lewm is None:
+            lewm_path = str(cfg.lewm_checkpoint or cache_metadata.get("lewm_checkpoint", ""))
+            if not lewm_path:
+                raise ValueError("lewm_checkpoint is required when planner loading is disabled.")
+            lewm = load_lewm(lewm_path).to(device).eval()
+            lewm.requires_grad_(False)
+
         if cfg.rollout_cache.generate_only:
             print("cache_generation_only_complete", flush=True)
             return
-        set_random_seed(cfg.seed)
-    else:
-        real_rollout_dataset = RolloutCacheDataset(rollout_cache_path(cfg))
-        expected_records = len(fine_tune_source_dataset)
-        max_records = cfg.rollout_cache.get("max_records")
-        if max_records is not None:
-            expected_records = min(expected_records, int(max_records))
-        cached_records = real_rollout_dataset.metadata.get("source_records")
-        if cached_records is None or int(cached_records) != expected_records:
-            raise ValueError(
-                "rollout_cache.mode=use requires a cache generated from this "
-                "run's fine-tuning split. Regenerate the cache after enabling "
-                "staged training (or use the same split seed and proportions)."
+        if not (run_distillation or run_fine_tune):
+            print("cache_generation_complete_no_training_stage_enabled", flush=True)
+            return
+
+        if not run_distillation:
+            checkpoint_path = stages.distillation_checkpoint
+            if not checkpoint_path:
+                raise ValueError(
+                    "staged_training.distillation_checkpoint is required when "
+                    "distillation=false and fine_tune=true; point it to a prior "
+                    "*_distillation_best.pt or *_distilled.pt checkpoint."
+                )
+            model = ReferenceGuidedWorldModel.from_checkpoint(
+                str(checkpoint_path), device=device
             )
-    cache_metadata = {key: _decode_h5_attribute(value) for key, value in real_rollout_dataset.metadata.items()}
-    cache_metadata.update({
-        "distillation_fraction": distill_fraction,
-        "fine_tune_fraction": fine_tune_fraction,
-    })
+            if model.architecture.max_horizon < horizon:
+                raise ValueError("Distillation checkpoint cannot represent cache horizon.")
 
-    fine_tune_train, fine_tune_validation = split_train_validation(
-        real_rollout_dataset, float(cfg.staged_training.fine_tune_train_split),
-        cfg.seed + 1, name="fine-tune train/validation",
-    )
-    distill_loader = make_loader(distill_dataset, cfg, shuffle=True)
-    distill_validation_loader = make_loader(real_rollout_dataset, cfg, shuffle=False, drop_last=False)
-    fine_tune_loader = make_loader(fine_tune_train, cfg, shuffle=True)
-    fine_tune_validation_loader = make_loader(fine_tune_validation, cfg, shuffle=False, drop_last=False)
-    print(
-        f"staged_schedule distill_batches={len(distill_loader)} "
-        f"distill_validation_records={len(real_rollout_dataset)} "
-        f"fine_tune_train_records={len(fine_tune_train)} "
-        f"fine_tune_validation_records={len(fine_tune_validation)} "
-        f"distill_epochs={cfg.staged_training.distillation_epochs} "
-        f"fine_tune_epochs={cfg.staged_training.fine_tune_epochs}", flush=True,
-    )
+        distill_loader = None
+        distill_validation_loader = None
+        if run_distillation:
+            distill_loader = make_loader(distill_dataset, cfg, shuffle=True)
+            distill_validation_loader = make_loader(
+                real_rollout_dataset, cfg, shuffle=False, drop_last=False
+            )
+        fine_tune_loader = None
+        fine_tune_validation_loader = None
+        if run_fine_tune:
+            fine_tune_train, fine_tune_validation = split_train_validation(
+                real_rollout_dataset, float(stages.fine_tune_train_split),
+                cfg.seed + 1, name="fine-tune train/validation",
+            )
+            fine_tune_loader = make_loader(fine_tune_train, cfg, shuffle=True)
+            fine_tune_validation_loader = make_loader(
+                fine_tune_validation, cfg, shuffle=False, drop_last=False
+            )
+        print(
+            f"staged_schedule generate_cache={generate_cache} "
+            f"distillation={run_distillation} fine_tune={run_fine_tune} "
+            f"distill_batches={len(distill_loader) if distill_loader else 0} "
+            f"fine_tune_batches={len(fine_tune_loader) if fine_tune_loader else 0}",
+            flush=True,
+        )
 
-    optimizer = torch.optim.AdamW(model.parameters(), lr=cfg.optimizer.lr, weight_decay=cfg.optimizer.weight_decay)
-    run_dir = Path(stablewm_cache_dir(sub_folder="checkpoints"), cfg.subdir)
-    run_dir.mkdir(parents=True, exist_ok=True)
-    OmegaConf.save(cfg, run_dir / "reference_guided_world_model_config.yaml")
-    wandb_run = init_wandb(cfg, run_dir)
-    global_step = 0
-    best_distill_validation = float("inf")
-    best_fine_tune_validation = float("inf")
-    try:
-        for epoch in range(1, int(cfg.staged_training.distillation_epochs) + 1):
-            model.train()
-            for batch_index, batch in enumerate(distill_loader, start=1):
-                reference_path, actions = planner_idm_batch(runtime, batch, horizon, cfg.sampling.flow_steps, device)
-                with torch.no_grad():
-                    lewm_target = continuous_lewm_predictions(lewm, reference_path, actions)
-                output = reference_guided_training_step(model, lewm, reference_path, actions, lewm_target)
-                optimizer.zero_grad(set_to_none=True)
-                output["loss"].backward()
-                grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), cfg.grad_clip_norm)
-                optimizer.step()
-                global_step += 1
-                if global_step % int(cfg.log_interval) == 0:
-                    values = {"distillation/train/loss": scalar(output["loss"]), "distillation/train/grad_norm": scalar(grad_norm), "distillation/epoch": epoch}
-                    if wandb_run is not None:
-                        wandb_run.log(values, step=global_step)
-                    print(f"stage=distillation epoch={epoch} step={global_step} loss={scalar(output['loss']):.6f} grad_norm={scalar(grad_norm):.4f}", flush=True)
-                if cfg.max_train_batches and batch_index >= cfg.max_train_batches:
-                    break
-            validation = validate_against_real_rollouts(model, lewm, distill_validation_loader, device, cfg.validation.max_batches)
-            log_real_rollout_validation("distillation", epoch, validation, wandb_run, global_step)
-            if validation["distillation_mse"] < best_distill_validation:
-                best_distill_validation = validation["distillation_mse"]
-                save_stage_checkpoint(model, cfg, run_dir, cache_metadata, "distillation", "distillation_best")
-            save_stage_checkpoint(model, cfg, run_dir, cache_metadata, "distillation", f"distillation_epoch_{epoch}")
+        optimizer = torch.optim.AdamW(
+            model.parameters(), lr=cfg.optimizer.lr, weight_decay=cfg.optimizer.weight_decay
+        )
+        run_dir = Path(stablewm_cache_dir(sub_folder="checkpoints"), cfg.subdir)
+        run_dir.mkdir(parents=True, exist_ok=True)
+        OmegaConf.save(cfg, run_dir / "reference_guided_world_model_config.yaml")
+        wandb_run = init_wandb(cfg, run_dir)
+        global_step = 0
+        best_distill_validation = float("inf")
+        best_fine_tune_validation = float("inf")
+        try:
+            if run_distillation:
+                for epoch in range(1, int(stages.distillation_epochs) + 1):
+                    model.train()
+                    for batch_index, batch in enumerate(distill_loader, start=1):
+                        reference_path, actions = planner_idm_batch(
+                            runtime, batch, horizon, cfg.sampling.flow_steps, device
+                        )
+                        with torch.no_grad():
+                            lewm_target = continuous_lewm_predictions(
+                                lewm, reference_path, actions
+                            )
+                        output = reference_guided_training_step(
+                            model, lewm, reference_path, actions, lewm_target
+                        )
+                        optimizer.zero_grad(set_to_none=True)
+                        output["loss"].backward()
+                        grad_norm = torch.nn.utils.clip_grad_norm_(
+                            model.parameters(), cfg.grad_clip_norm
+                        )
+                        optimizer.step()
+                        global_step += 1
+                        if global_step % int(cfg.log_interval) == 0:
+                            values = {
+                                "distillation/train/loss": scalar(output["loss"]),
+                                "distillation/train/grad_norm": scalar(grad_norm),
+                                "distillation/epoch": epoch,
+                            }
+                            if wandb_run is not None:
+                                wandb_run.log(values, step=global_step)
+                            print(
+                                f"stage=distillation epoch={epoch} step={global_step} "
+                                f"loss={scalar(output['loss']):.6f}", flush=True,
+                            )
+                        if cfg.max_train_batches and batch_index >= cfg.max_train_batches:
+                            break
+                    validation = validate_against_real_rollouts(
+                        model, lewm, distill_validation_loader, device,
+                        cfg.validation.max_batches,
+                    )
+                    log_real_rollout_validation(
+                        "distillation", epoch, validation, wandb_run, global_step
+                    )
+                    if validation["distillation_mse"] < best_distill_validation:
+                        best_distill_validation = validation["distillation_mse"]
+                        save_stage_checkpoint(
+                            model, cfg, run_dir, cache_metadata,
+                            "distillation", "distillation_best",
+                        )
+                    save_stage_checkpoint(
+                        model, cfg, run_dir, cache_metadata,
+                        "distillation", f"distillation_epoch_{epoch}",
+                    )
+                save_stage_checkpoint(
+                    model, cfg, run_dir, cache_metadata, "distillation", "distilled"
+                )
 
-        for epoch in range(1, int(cfg.staged_training.fine_tune_epochs) + 1):
-            model.train()
-            for batch_index, batch in enumerate(fine_tune_loader, start=1):
-                reference_path = batch["reference_path"].to(device, non_blocking=True)
-                actions = batch["actions"].to(device, non_blocking=True)
-                target = batch["executed_target"].to(device, non_blocking=True)
-                output = reference_guided_training_step(model, lewm, reference_path, actions, target)
-                optimizer.zero_grad(set_to_none=True)
-                output["loss"].backward()
-                grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), cfg.grad_clip_norm)
-                optimizer.step()
-                global_step += 1
-                if global_step % int(cfg.log_interval) == 0:
-                    values = {"fine_tune/train/loss": scalar(output["loss"]), "fine_tune/train/grad_norm": scalar(grad_norm), "fine_tune/epoch": epoch}
-                    if wandb_run is not None:
-                        wandb_run.log(values, step=global_step)
-                    print(f"stage=fine_tune epoch={epoch} step={global_step} loss={scalar(output['loss']):.6f} grad_norm={scalar(grad_norm):.4f}", flush=True)
-                if cfg.max_train_batches and batch_index >= cfg.max_train_batches:
-                    break
-            validation = validate_against_real_rollouts(model, lewm, fine_tune_validation_loader, device, cfg.validation.max_batches)
-            log_real_rollout_validation("fine_tune", epoch, validation, wandb_run, global_step)
-            if validation["model_full_mse"] < best_fine_tune_validation:
-                best_fine_tune_validation = validation["model_full_mse"]
-                save_stage_checkpoint(model, cfg, run_dir, cache_metadata, "fine_tune", "best")
-            save_stage_checkpoint(model, cfg, run_dir, cache_metadata, "fine_tune", f"fine_tune_epoch_{epoch}")
-            final_metadata = dict(cache_metadata)
-            final_metadata["stage"] = "fine_tune"
-            checkpoint(model, cfg, run_dir / f"{cfg.output_model_name}.pt", final_metadata)
+            if run_fine_tune:
+                for epoch in range(1, int(stages.fine_tune_epochs) + 1):
+                    model.train()
+                    for batch_index, batch in enumerate(fine_tune_loader, start=1):
+                        reference_path = batch["reference_path"].to(device, non_blocking=True)
+                        actions = batch["actions"].to(device, non_blocking=True)
+                        target = batch["executed_target"].to(device, non_blocking=True)
+                        output = reference_guided_training_step(
+                            model, lewm, reference_path, actions, target
+                        )
+                        optimizer.zero_grad(set_to_none=True)
+                        output["loss"].backward()
+                        grad_norm = torch.nn.utils.clip_grad_norm_(
+                            model.parameters(), cfg.grad_clip_norm
+                        )
+                        optimizer.step()
+                        global_step += 1
+                        # Fine-tune sees real targets, so write every requested
+                        # real-rollout comparison for every optimizer update.
+                        train_metrics = real_rollout_batch_metrics(
+                            output["trajectory"].detach(), lewm, reference_path,
+                            actions, target,
+                        )
+                        values = wandb_real_rollout_metrics(
+                            "fine_tune", "train", train_metrics, epoch
+                        )
+                        values.update({
+                            "fine_tune/train/loss": scalar(output["loss"]),
+                            "fine_tune/train/grad_norm": scalar(grad_norm),
+                        })
+                        if wandb_run is not None:
+                            wandb_run.log(values, step=global_step)
+                        if global_step % int(cfg.log_interval) == 0:
+                            print(
+                                f"stage=fine_tune epoch={epoch} step={global_step} "
+                                f"model_full_mse={scalar(train_metrics['model_full_mse']):.6f} "
+                                f"lewm_full_mse={scalar(train_metrics['lewm_full_mse']):.6f}",
+                                flush=True,
+                            )
+                        if cfg.max_train_batches and batch_index >= cfg.max_train_batches:
+                            break
+                    validation = validate_against_real_rollouts(
+                        model, lewm, fine_tune_validation_loader, device,
+                        cfg.validation.max_batches,
+                    )
+                    log_real_rollout_validation(
+                        "fine_tune", epoch, validation, wandb_run, global_step
+                    )
+                    if validation["model_full_mse"] < best_fine_tune_validation:
+                        best_fine_tune_validation = validation["model_full_mse"]
+                        save_stage_checkpoint(
+                            model, cfg, run_dir, cache_metadata, "fine_tune", "best"
+                        )
+                    save_stage_checkpoint(
+                        model, cfg, run_dir, cache_metadata,
+                        "fine_tune", f"fine_tune_epoch_{epoch}",
+                    )
+                    final_metadata = dict(cache_metadata)
+                    final_metadata["stage"] = "fine_tune"
+                    checkpoint(
+                        model, cfg, run_dir / f"{cfg.output_model_name}.pt",
+                        final_metadata,
+                    )
+        finally:
+            if wandb_run is not None:
+                wandb_run.finish()
     finally:
-        if wandb_run is not None:
-            wandb_run.finish()
         close_rollout_backend(world, rollout_pool)
 
 

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-export STABLEWM_HOME="${STABLEWM_HOME:-/root/projects/pusht}"
+export STABLEWM_HOME="${STABLEWM_HOME:-/root/autodl-tmp/pusht}"
 
 DATA=pusht
 PLANNER_CHECKPOINT="${PLANNER_CHECKPOINT:-$STABLEWM_HOME/leflow/pusht/latent_planner_h10.pt}"
