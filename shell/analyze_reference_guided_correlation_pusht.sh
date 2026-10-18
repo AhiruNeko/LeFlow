@@ -6,7 +6,7 @@ export STABLEWM_HOME=/root/projects/pusht
 export HYDRA_FULL_ERROR=1
 
 PLANNER_CHECKPOINT=/root/projects/pusht/leflow/pusht/latent_planner_h10.pt
-REFERENCE_GUIDED_CHECKPOINT=/root/projects/pusht/reference_guided_world_model/pusht_h10/reference_guided_world_model_new.pt
+REFERENCE_GUIDED_CHECKPOINT=/root/projects/pusht/reference_guided_world_model/pusht_h10/reference_guided_world_model_best.pt
 LEWM_CHECKPOINT=/root/projects/pusht/pusht/lewm_object.ckpt
 
 conda run -n lewm --no-capture-output python analysis/analyze_reference_guided_correlation.py \

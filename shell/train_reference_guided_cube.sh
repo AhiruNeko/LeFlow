@@ -18,4 +18,7 @@ conda run -n lewm --no-capture-output python train_reference_guided_world_model.
   "rollout_cache.path=$ROLLOUT_CACHE_PATH" \
   "seed=$SEED" \
   "data.world.rollout_workers=$ROLLOUT_WORKERS" \
+  "staged_training.generate_rollout_cache=true" \
+  "staged_training.distillation=true" \
+  "staged_training.fine_tune=true" \
   "subdir=$OUTPUT_DIR"

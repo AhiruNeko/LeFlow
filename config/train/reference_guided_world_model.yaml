@@ -39,11 +39,11 @@ staged_training:
   distillation_checkpoint: null
   distillation_fraction: 0.9
   fine_tune_fraction: 0.1
-  # Defaults retain compatibility with legacy epochs=N and optimizer.lr=N.
-  distillation_epochs: ${epochs}
-  fine_tune_epochs: ${epochs}
-  distillation_lr: ${optimizer.lr}
-  fine_tune_lr: ${optimizer.lr}
+  # Shared default schedule for all task launchers; each remains overrideable.
+  distillation_epochs: 10
+  fine_tune_epochs: 25
+  distillation_lr: 1.0e-4
+  fine_tune_lr: 3.0e-5
   # Split the simulator-cached fine-tuning partition again into train/validation.
   fine_tune_train_split: 0.9
 
