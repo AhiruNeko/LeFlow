@@ -353,7 +353,12 @@ class LatentPlannerRuntime(nn.Module):
         return next(self.parameters()).device
 
     @classmethod
-    def from_checkpoint(cls, checkpoint: str | Path, device: str | torch.device = "cpu"):
+    def from_checkpoint(
+        cls,
+        checkpoint: str | Path,
+        device: str | torch.device = "cpu",
+        lewm_checkpoint: str | Path | None = None,
+    ):
         path = _resolve_checkpoint(checkpoint)
         payload = torch.load(path, map_location="cpu", weights_only=False)
         if not isinstance(payload, dict):
@@ -363,7 +368,9 @@ class LatentPlannerRuntime(nn.Module):
             )
 
         arch = payload["arch"]
-        lewm = load_lewm(payload["lewm_checkpoint"])
+        # Planner payload is the default provenance; evaluation may explicitly
+        # override it to compare against a selected LeWM checkpoint.
+        lewm = load_lewm(lewm_checkpoint or payload["lewm_checkpoint"])
         flow = LatentPathFlow(**arch["flow"])
         inverse_dynamics = InverseDynamics(**arch["inverse_dynamics"])
         flow.load_state_dict(payload["flow_state_dict"])
@@ -599,6 +606,7 @@ class LearnedLatentPathSolver:
         seed: int = 1234,
         history_size: int = 3,
         reference_guided_checkpoint: str | Path | None = None,
+        lewm_checkpoint: str | Path | None = None,
     ):
         self.checkpoint = checkpoint
         self.batch_size = batch_size
@@ -613,7 +621,9 @@ class LearnedLatentPathSolver:
             requested_device = torch.device("cpu")
         self.device = requested_device
         self.history_size = history_size
-        self.model = LatentPlannerRuntime.from_checkpoint(checkpoint, device=self.device)
+        self.model = LatentPlannerRuntime.from_checkpoint(
+            checkpoint, device=self.device, lewm_checkpoint=lewm_checkpoint
+        )
         self.reference_guided_model = None
         if reference_guided_checkpoint:
             from reference_guided_world_model import ReferenceGuidedWorldModel

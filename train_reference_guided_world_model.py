@@ -515,7 +515,7 @@ def simulator_targets(
 
 
 @torch.no_grad()
-def generate_rollout_cache(
+def _generate_rollout_cache_single(
     *,
     cfg,
     runtime,
@@ -528,9 +528,12 @@ def generate_rollout_cache(
     rollout_pool,
     pixel_tx,
     device,
+    cache_path=None,
 ):
     """Generate exactly one frozen-planner rollout for every source clip."""
-    cache_path = rollout_cache_path(cfg)
+    cache_path = (
+        Path(cache_path) if cache_path is not None else rollout_cache_path(cfg)
+    )
     if cache_path.exists() and not cfg.rollout_cache.overwrite:
         raise FileExistsError(
             f"Cache already exists: {cache_path}. Set rollout_cache.overwrite=true to replace it."
@@ -666,6 +669,238 @@ def generate_rollout_cache(
         progress.close()
     print(f"cache_generation_done path={cache_path} records={count}", flush=True)
     return RolloutCacheDataset(cache_path)
+
+
+def _partition_shard_path(cache_path, partition_index, start, end):
+    return cache_path.parent / f"{cache_path.name}.parts" / (
+        f"part-{partition_index:05d}-{start:09d}-{end:09d}.h5"
+    )
+
+
+def _partition_shard_complete(path, *, start, end, total_records, cfg):
+    """Return true only for a shard from this exact deterministic collection."""
+    if not path.exists():
+        return False
+    try:
+        with h5py.File(path, "r", locking=False) as file:
+            required = (*RolloutCacheDataset.required_keys, "episode_index", "start_step")
+            if not bool(file.attrs.get("complete", False)):
+                return False
+            if any(key not in file for key in required):
+                return False
+            records = end - start
+            if any(file[key].shape[0] != records for key in required):
+                return False
+            return (
+                int(file.attrs.get("partition_start", -1)) == start
+                and int(file.attrs.get("partition_end", -1)) == end
+                and int(file.attrs.get("partition_total_records", -1)) == total_records
+                and int(file.attrs.get("collection_seed", -1))
+                == int(cfg.rollout_cache.collection_seed)
+            )
+    except OSError:
+        return False
+
+
+def _merge_partition_shards(cfg, cache_path, shard_specs, total_records):
+    """Atomically materialize the normal single-file cache from completed shards."""
+    temporary_path = cache_path.with_suffix(cache_path.suffix + ".tmp")
+    if temporary_path.exists():
+        temporary_path.unlink()
+    dataset_keys = (*RolloutCacheDataset.required_keys, "episode_index", "start_step")
+    try:
+        with h5py.File(shard_specs[0][0], "r", locking=False) as first_shard:
+            with h5py.File(temporary_path, "w") as output:
+                file_chunk_size = min(int(cfg.rollout_cache.chunk_size), total_records)
+                for key in dataset_keys:
+                    source = first_shard[key]
+                    output.create_dataset(
+                        key,
+                        shape=(total_records, *source.shape[1:]),
+                        dtype=source.dtype,
+                        chunks=(file_chunk_size, *source.shape[1:]),
+                    )
+                for key, value in first_shard.attrs.items():
+                    output.attrs[key] = value
+                output.attrs["complete"] = False
+                output.attrs["format_version"] = 2
+                output.attrs["source_records"] = int(total_records)
+                output.attrs["partitioned"] = True
+                output.attrs["partition_count"] = len(shard_specs)
+                for shard_path, start, end in shard_specs:
+                    with h5py.File(shard_path, "r", locking=False) as shard:
+                        for key in dataset_keys:
+                            output[key][start:end] = shard[key][:]
+                output.attrs["complete"] = True
+        os.replace(temporary_path, cache_path)
+    except Exception:
+        if temporary_path.exists():
+            temporary_path.unlink()
+        raise
+
+
+@torch.no_grad()
+def _generate_rollout_cache_partitioned(
+    *,
+    cfg,
+    runtime,
+    raw_dataset,
+    source_dataset,
+    horizon,
+    action_mean,
+    action_std,
+    pixel_tx,
+    device,
+    backend_factory,
+    partition_size,
+):
+    """Generate deterministic cache shards, recycling simulator workers per shard."""
+    cache_path = rollout_cache_path(cfg)
+    if cache_path.exists() and not cfg.rollout_cache.overwrite:
+        raise FileExistsError(
+            f"Cache already exists: {cache_path}. Set rollout_cache.overwrite=true to replace it."
+        )
+    count = len(source_dataset)
+    max_records = cfg.rollout_cache.get("max_records")
+    if max_records is not None:
+        count = min(count, int(max_records))
+    if count < 1:
+        raise ValueError("rollout_cache.max_records must be positive when provided.")
+    if partition_size < 1:
+        raise ValueError("rollout_cache.partition_size must be positive when provided.")
+
+    cache_path.parent.mkdir(parents=True, exist_ok=True)
+    shard_specs = []
+    partition_count = (count + partition_size - 1) // partition_size
+    print(
+        f"cache_generation_partitioned_start path={cache_path} records={count} "
+        f"partition_size={partition_size} partitions={partition_count} "
+        f"rollout_workers={cfg.data.world.get('rollout_workers', 0)}",
+        flush=True,
+    )
+    for partition_index, start in enumerate(range(0, count, partition_size)):
+        end = min(start + partition_size, count)
+        shard_path = _partition_shard_path(cache_path, partition_index, start, end)
+        shard_path.parent.mkdir(parents=True, exist_ok=True)
+        shard_specs.append((shard_path, start, end))
+        if (
+            not cfg.rollout_cache.overwrite
+            and _partition_shard_complete(
+                shard_path, start=start, end=end, total_records=count, cfg=cfg
+            )
+        ):
+            print(
+                f"cache_generation_partition_reused index={partition_index} "
+                f"records=[{start},{end}) path={shard_path}",
+                flush=True,
+            )
+            continue
+        if shard_path.exists():
+            shard_path.unlink()
+        print(
+            f"cache_generation_partition_start index={partition_index} "
+            f"records=[{start},{end})/{count}",
+            flush=True,
+        )
+        partition_dataset = torch.utils.data.Subset(source_dataset, range(start, end))
+        world = rollout_pool = None
+        try:
+            world, rollout_pool = backend_factory()
+            _generate_rollout_cache_single(
+                cfg=cfg,
+                runtime=runtime,
+                raw_dataset=raw_dataset,
+                source_dataset=partition_dataset,
+                horizon=horizon,
+                action_mean=action_mean,
+                action_std=action_std,
+                world=world,
+                rollout_pool=rollout_pool,
+                pixel_tx=pixel_tx,
+                device=device,
+                cache_path=shard_path,
+            )
+        finally:
+            close_rollout_backend(world, rollout_pool)
+        with h5py.File(shard_path, "r+") as shard:
+            shard.attrs["partition_start"] = start
+            shard.attrs["partition_end"] = end
+            shard.attrs["partition_total_records"] = count
+            shard.attrs["partition_index"] = partition_index
+            shard.attrs["partition_count"] = partition_count
+        print(
+            f"cache_generation_partition_done index={partition_index} "
+            f"records=[{start},{end}) path={shard_path}",
+            flush=True,
+        )
+
+    incomplete = [
+        str(path) for path, start, end in shard_specs
+        if not _partition_shard_complete(
+            path, start=start, end=end, total_records=count, cfg=cfg
+        )
+    ]
+    if incomplete:
+        raise RuntimeError(f"Incomplete cache partitions: {incomplete}")
+    _merge_partition_shards(cfg, cache_path, shard_specs, count)
+    print(
+        f"cache_generation_partitioned_done path={cache_path} records={count} "
+        f"partitions={partition_count}",
+        flush=True,
+    )
+    return RolloutCacheDataset(cache_path)
+
+
+@torch.no_grad()
+def generate_rollout_cache(
+    *,
+    cfg,
+    runtime,
+    raw_dataset,
+    source_dataset,
+    horizon,
+    action_mean,
+    action_std,
+    world,
+    rollout_pool,
+    pixel_tx,
+    device,
+    backend_factory=None,
+):
+    """Generate a normal cache directly, or recycle simulator workers per partition."""
+    partition_size = cfg.rollout_cache.get("partition_size")
+    if partition_size is None or int(partition_size) == 0:
+        return _generate_rollout_cache_single(
+            cfg=cfg,
+            runtime=runtime,
+            raw_dataset=raw_dataset,
+            source_dataset=source_dataset,
+            horizon=horizon,
+            action_mean=action_mean,
+            action_std=action_std,
+            world=world,
+            rollout_pool=rollout_pool,
+            pixel_tx=pixel_tx,
+            device=device,
+        )
+    if backend_factory is None:
+        raise ValueError(
+            "rollout_cache.partition_size requires a backend_factory so each "
+            "partition can start with fresh simulator workers."
+        )
+    return _generate_rollout_cache_partitioned(
+        cfg=cfg,
+        runtime=runtime,
+        raw_dataset=raw_dataset,
+        source_dataset=source_dataset,
+        horizon=horizon,
+        action_mean=action_mean,
+        action_std=action_std,
+        pixel_tx=pixel_tx,
+        device=device,
+        backend_factory=backend_factory,
+        partition_size=int(partition_size),
+    )
 
 
 def checkpoint(model, cfg, path, metadata):
@@ -967,13 +1202,28 @@ def run(cfg: DictConfig):
             action_data = action_data[~torch.isnan(action_data).any(dim=1)]
             action_mean = action_data.mean(0).to(device)
             action_std = action_data.std(0).clamp_min(1e-6).to(device)
-            world, rollout_pool = create_rollout_backend(cfg, horizon, runtime.action_block)
+            partition_size = cfg.rollout_cache.get("partition_size")
+            partitioned_cache = (
+                partition_size is not None and int(partition_size) != 0
+            )
+            backend_factory = None
+            if partitioned_cache:
+                # A new backend is created for every cache partition.  In the
+                # multi-worker mode this means fresh spawned worker processes
+                # and fresh EGL contexts for every partition.
+                backend_factory = lambda: create_rollout_backend(
+                    cfg, horizon, runtime.action_block
+                )
+            else:
+                world, rollout_pool = create_rollout_backend(
+                    cfg, horizon, runtime.action_block
+                )
             real_rollout_dataset = generate_rollout_cache(
                 cfg=cfg, runtime=runtime, raw_dataset=raw_dataset,
                 source_dataset=fine_tune_source_dataset, horizon=horizon,
                 action_mean=action_mean, action_std=action_std, world=world,
                 rollout_pool=rollout_pool, pixel_tx=image_transform(cfg.img_size),
-                device=device,
+                device=device, backend_factory=backend_factory,
             )
             close_rollout_backend(world, rollout_pool)
             world = rollout_pool = None

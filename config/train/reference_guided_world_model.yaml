@@ -79,5 +79,10 @@ rollout_cache:
   # If true, mode=generate exits after atomically writing the cache.
   generate_only: false
   chunk_size: 4096
+  # null (or 0) preserves the original one-pass generator. A positive value
+  # creates deterministic HDF5 shards of this many clips, closes the complete
+  # simulator backend after every shard, then atomically merges the shards.
+  # Completed shards are reused after an interruption when overwrite=false.
+  partition_size: null
   # Optional cap used only for fast smoke tests. null collects every clip.
   max_records: null
