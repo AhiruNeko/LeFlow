@@ -36,6 +36,8 @@ eval:
   eval_budget: 50
   img_size: 224
   dataset_name: dmc/reacher_random
+  # Matches PushT/TwoRooms; repeated-seed scripts override this to false.
+  save_artifacts: true
   callables:
     # -- set state
     - method: set_state
