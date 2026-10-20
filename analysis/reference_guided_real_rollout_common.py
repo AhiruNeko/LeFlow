@@ -17,10 +17,40 @@ from reference_guided_world_model import ReferenceGuidedWorldModel, continuous_l
 from train_reference_guided_world_model import image_transform, simulator_targets
 
 
+TASK_PROFILES = {
+    "pusht": {
+        "dataset_keys": ["pixels", "action", "state", "proprio"],
+        "world": {"env_name": "swm/PushT-v1"},
+        "simulator_restore": None,
+    },
+    "reacher": {
+        "dataset_keys": ["pixels", "action", "qpos", "qvel"],
+        "world": {
+            "env_name": "swm/ReacherDMControl-v0",
+            "task": "qpos_match",
+        },
+        "simulator_restore": [
+            {
+                "method": "set_state",
+                "args": {
+                    "qpos": {"source": "qpos", "index": 0},
+                    "qvel": {"source": "qvel", "index": 0},
+                },
+            },
+            {
+                "method": "set_target_qpos",
+                "args": {"target_qpos": {"source": "qpos", "index": -1}},
+            },
+        ],
+    },
+}
+
+
 def parse_args_common(parser):
     parser.add_argument("--planner-checkpoint", required=True)
     parser.add_argument("--reference-guided-checkpoint", required=True)
     parser.add_argument("--lewm-checkpoint", required=True, help="Exact frozen LeWM checkpoint used for every latent encoding and prediction.")
+    parser.add_argument("--task", choices=sorted(TASK_PROFILES), default="pusht")
     parser.add_argument("--dataset-name", default="pusht_expert_train")
     parser.add_argument("--cache-dir", default=None)
     parser.add_argument("--tasks", type=int, default=10)
@@ -65,8 +95,16 @@ def summary(values):
     return {"mean": float(values.mean()), "sample_std": float(values.std(ddof=1)) if values.size > 1 else 0.0, "count": int(values.size)}
 
 
-def make_dataset(dataset_name, cache_dir):
-    return swm.data.HDF5Dataset(dataset_name, keys_to_load=["pixels", "action", "state", "proprio"], keys_to_cache=["action", "state", "proprio"], cache_dir=cache_dir, transform=None)
+def make_dataset(dataset_name, cache_dir, task):
+    profile = TASK_PROFILES[task]
+    keys = profile["dataset_keys"]
+    return swm.data.HDF5Dataset(
+        dataset_name,
+        keys_to_load=keys,
+        keys_to_cache=[key for key in keys if key != "pixels"],
+        cache_dir=cache_dir,
+        transform=None,
+    )
 
 
 def choose_tasks(dataset, count, goal_offset, seed):
@@ -91,7 +129,7 @@ def action_normalizer(dataset, device):
 
 
 class RealCandidateEvaluator:
-    """Generate planner candidates, execute them in PushT, and score both models."""
+    """Generate planner candidates, execute task rollouts, and score both models."""
 
     def __init__(self, args):
         self.args, self.device = args, torch.device(args.device)
@@ -104,7 +142,9 @@ class RealCandidateEvaluator:
         self.runtime.requires_grad_(False)
         self.guided = ReferenceGuidedWorldModel.from_checkpoint(args.reference_guided_checkpoint, device=self.device).eval()
         self.guided.requires_grad_(False)
-        self.dataset = make_dataset(args.dataset_name, args.cache_dir)
+        self.task = str(args.task)
+        self.profile = TASK_PROFILES[self.task]
+        self.dataset = make_dataset(args.dataset_name, args.cache_dir, self.task)
         # flow.max_horizon is architectural capacity (20 for the H10 planner),
         # not the horizon used to train and evaluate this checkpoint.
         planner_payload = torch.load(
@@ -119,14 +159,15 @@ class RealCandidateEvaluator:
             ) from error
         self.action_mean, self.action_std = action_normalizer(self.dataset, self.device)
         self.transform = image_transform(args.img_size)
-        self.world = create_world(
-            {
-                'env_name': 'swm/PushT-v1',
-                'num_envs': int(args.candidates),
-                'max_episode_steps': self.horizon * int(self.runtime.action_block),
-            },
-            image_shape=(args.img_size, args.img_size),
+        world_config = dict(self.profile["world"])
+        world_config.update(
+            num_envs=int(args.candidates),
+            max_episode_steps=self.horizon * int(self.runtime.action_block),
         )
+        self.world = create_world(
+            world_config, image_shape=(args.img_size, args.img_size)
+        )
+        self.task_restore = self.profile["simulator_restore"]
         self.generator = torch.Generator(device=self.device).manual_seed(int(args.seed))
 
     @torch.no_grad()
@@ -139,7 +180,13 @@ class RealCandidateEvaluator:
         z_goal = self.runtime.encode_pixels(self.transform(pixels[-1:]).to(self.device))[:, 0]
         paths = self.runtime.sample_paths(z_start, z_goal, horizon=self.horizon, num_samples=int(self.args.candidates), flow_steps=int(self.args.flow_steps), generator=self.generator)
         actions = self.runtime.decode_actions(paths)
-        target = simulator_targets(self.runtime, self.world, self.dataset, np.asarray([episode]), np.asarray([start]), paths, actions, goal_offset=int(self.args.goal_offset_steps), image_tx=self.transform, action_mean=self.action_mean, action_std=self.action_std, device=self.device)
+        target = simulator_targets(
+            self.runtime, self.world, self.dataset, np.asarray([episode]),
+            np.asarray([start]), paths, actions,
+            goal_offset=int(self.args.goal_offset_steps), image_tx=self.transform,
+            action_mean=self.action_mean, action_std=self.action_std,
+            device=self.device, task_restore=self.task_restore,
+        )
         flat_paths, flat_actions = paths[0], actions[0]
         lewm = continuous_lewm_predictions(self.runtime.lewm, flat_paths, flat_actions, history_size=int(self.args.history_size))
         local = parallel_segment_predictions(self.runtime.lewm, flat_paths, flat_actions)
