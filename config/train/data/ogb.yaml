@@ -22,8 +22,6 @@ world:
   env_name: swm/OGBCube-v0
   num_envs: 4
   max_episode_steps: 50
-  history_size: 1
-  frame_skip: 1
   rollout_workers: 8
   env_type: single
   ob_type: states

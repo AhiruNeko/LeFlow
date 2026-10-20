@@ -15,6 +15,4 @@ world:
   env_name: swm/PushT-v1
   num_envs: 4
   max_episode_steps: 50
-  history_size: 1
-  frame_skip: 1
   rollout_workers: 8

@@ -16,6 +16,8 @@ from sklearn import preprocessing
 from torchvision.transforms import v2 as transforms
 import stable_worldmodel as swm
 
+from stable_worldmodel_compat import create_world, evaluate_from_dataset
+
 def img_transform(cfg):
     transform = transforms.Compose(
         [
@@ -91,7 +93,7 @@ def run(cfg: DictConfig):
 
     # create world environment
     cfg.world.max_episode_steps = 2 * cfg.eval.eval_budget
-    world = swm.World(**cfg.world, image_shape=(224, 224))
+    world = create_world(cfg.world, image_shape=(224, 224))
 
     # create the transform
     transform = {
@@ -188,7 +190,8 @@ def run(cfg: DictConfig):
     start_time = time.time()
     save_artifacts = bool(cfg.eval.get("save_artifacts", True))
     if save_artifacts:
-        metrics = world.evaluate_from_dataset(
+        metrics = evaluate_from_dataset(
+            world,
             dataset,
             start_steps=eval_start_idx.tolist(),
             goal_offset_steps=cfg.eval.goal_offset_steps,
@@ -201,7 +204,8 @@ def run(cfg: DictConfig):
         # Keep evaluation outputs out of the checkpoint directory in repeated
         # multi-seed runs. The temporary directory is discarded immediately.
         with tempfile.TemporaryDirectory(prefix="leflow_eval_") as temporary_video_dir:
-            metrics = world.evaluate_from_dataset(
+            metrics = evaluate_from_dataset(
+                world,
                 dataset,
                 start_steps=eval_start_idx.tolist(),
                 goal_offset_steps=cfg.eval.goal_offset_steps,

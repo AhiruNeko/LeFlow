@@ -27,6 +27,7 @@ from reference_guided_world_model import (
     continuous_trajectory_loss,
     reference_guided_training_step,
 )
+from stable_worldmodel_compat import create_world, world_kwargs
 from utils import get_column_normalizer, get_img_preprocessor
 
 
@@ -339,7 +340,7 @@ def _rollout_worker_main(
                         world.close()
                     worker_world_cfg = dict(world_kwargs)
                     worker_world_cfg["num_envs"] = int(shard_size)
-                    world = swm.World(**worker_world_cfg, image_shape=tuple(image_shape))
+                    world = create_world(worker_world_cfg, image_shape=tuple(image_shape))
                     world_size = shard_size
 
                 init_world_from_dataset(
@@ -913,7 +914,7 @@ def checkpoint(model, cfg, path, metadata):
 
 
 def create_rollout_backend(cfg, horizon, action_block):
-    world_cfg = OmegaConf.to_container(cfg.data.world, resolve=True)
+    world_cfg = world_kwargs(OmegaConf.to_container(cfg.data.world, resolve=True))
     rollout_workers = int(world_cfg.pop("rollout_workers", 0))
     world_cfg["max_episode_steps"] = max(
         world_cfg["max_episode_steps"], horizon * action_block
@@ -930,7 +931,7 @@ def create_rollout_backend(cfg, horizon, action_block):
         return None, pool
 
     world_cfg["num_envs"] = cfg.loader.batch_size
-    return swm.World(**world_cfg, image_shape=(224, 224)), None
+    return create_world(world_cfg, image_shape=(224, 224)), None
 
 
 def close_rollout_backend(world, rollout_pool):

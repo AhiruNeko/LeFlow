@@ -15,16 +15,25 @@ import stable_worldmodel as swm
 
 
 def _install_reacher_target_qpos_compat() -> None:
-    """Restore a Reacher target from recorded terminal joint positions."""
+    """Align Reacher's visual target with a recorded terminal joint state.
+
+    New stable-worldmodel provides qpos termination natively, while the old
+    LeFlow adapter also moved the rendered target marker to the corresponding
+    fingertip.  Keep both behaviours so upgraded-package rollouts retain the
+    same target-conditioned images as before.
+    """
     try:
         from stable_worldmodel.envs.dmcontrol.reacher import (
             ReacherDMControlWrapper,
         )
-        # Other tasks do not need DM-Control or its renderer.
     except Exception:
         return
-    if hasattr(ReacherDMControlWrapper, "set_target_qpos"):
+    if getattr(ReacherDMControlWrapper, "_leflow_qpos_target_compat", False):
         return
+
+    native_set_target_qpos = getattr(
+        ReacherDMControlWrapper, "set_target_qpos", None
+    )
 
     def set_target_qpos(self, target_qpos) -> None:
         physics = self.env.physics
@@ -34,6 +43,10 @@ def _install_reacher_target_qpos_compat() -> None:
                 "target_qpos must match Reacher qpos shape "
                 f"{physics.data.qpos.shape}, got {target_qpos.shape}."
             )
+
+        # Preserve the upstream qpos-match termination state when present.
+        if callable(native_set_target_qpos):
+            native_set_target_qpos(self, target_qpos)
 
         saved_qpos = physics.data.qpos.copy()
         saved_qvel = physics.data.qvel.copy()
@@ -51,6 +64,7 @@ def _install_reacher_target_qpos_compat() -> None:
         physics.forward()
 
     ReacherDMControlWrapper.set_target_qpos = set_target_qpos
+    ReacherDMControlWrapper._leflow_qpos_target_compat = True
 
 
 def stablewm_cache_dir(sub_folder: str | None = None) -> Path:

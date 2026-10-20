@@ -9,6 +9,7 @@ import sys
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import numpy as np
 import stable_worldmodel as swm
+from stable_worldmodel_compat import create_world
 import torch
 
 from latent_planner import LatentPlannerRuntime, load_lewm
@@ -118,7 +119,14 @@ class RealCandidateEvaluator:
             ) from error
         self.action_mean, self.action_std = action_normalizer(self.dataset, self.device)
         self.transform = image_transform(args.img_size)
-        self.world = swm.World(env_name="swm/PushT-v1", num_envs=int(args.candidates), max_episode_steps=self.horizon * int(self.runtime.action_block), history_size=1, frame_skip=1, image_shape=(args.img_size, args.img_size))
+        self.world = create_world(
+            {
+                'env_name': 'swm/PushT-v1',
+                'num_envs': int(args.candidates),
+                'max_episode_steps': self.horizon * int(self.runtime.action_block),
+            },
+            image_shape=(args.img_size, args.img_size),
+        )
         self.generator = torch.Generator(device=self.device).manual_seed(int(args.seed))
 
     @torch.no_grad()
