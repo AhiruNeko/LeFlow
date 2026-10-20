@@ -310,6 +310,27 @@ def init_world_from_dataset(
     restore_world_from_chunks(world, chunks, task_restore)
 
 
+def _keep_reacher_rollout_continuous(world, task_restore):
+    """Disable dm_control's implicit reset during cache-only Reacher rollouts.
+
+    The qpos-match Reacher task marks an episode terminated when a rollout
+    reaches its restored target. dm_control then resets *on the next step*,
+    which would splice a new episode into the fixed-horizon simulator target.
+    Cache generation intentionally needs to execute every planner/IDM action,
+    so clear that pending reset before each action. ``set_target_qpos`` is
+    specific to the Reacher restore adapter; all other task configurations are
+    left untouched.
+    """
+    if not any(
+        callable_cfg.get("method") == "set_target_qpos"
+        for callable_cfg in (task_restore or ())
+    ):
+        return
+    for env in world.envs.unwrapped.envs:
+        dm_control_env = getattr(env.unwrapped, "env", None)
+        if hasattr(dm_control_env, "_reset_next_step"):
+            dm_control_env._reset_next_step = False
+
 def _rollout_worker_main(
     worker_id,
     task_queue,
@@ -349,6 +370,7 @@ def _rollout_worker_main(
                 segment_frames = []
                 for segment in range(horizon):
                     for inner in range(action_block):
+                        _keep_reacher_rollout_continuous(world, task_restore)
                         result = world.envs.step(env_actions[:, segment, inner])
                         (
                             world.states,
@@ -508,6 +530,7 @@ def simulator_targets(
     targets = []
     for segment in range(horizon):
         for inner in range(runtime.action_block):
+            _keep_reacher_rollout_continuous(world, task_restore)
             result = world.envs.step(env_actions[:, segment, inner])
             world.states, world.rewards, world.terminateds, world.truncateds, world.infos = result
             world.envs.unwrapped._autoreset_envs = np.zeros((n,), dtype=bool)
