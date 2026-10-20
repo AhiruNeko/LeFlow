@@ -273,6 +273,18 @@ def _restore_from_state_or_proprio(base, chunk):
     return True
 
 
+def _base_envs(world):
+    """Return unwrapped per-environment objects for old and new EnvPool APIs."""
+    pool = getattr(world.envs, "unwrapped", world.envs)
+    return [getattr(env, "unwrapped", env) for env in pool.envs]
+
+
+def _disable_legacy_envpool_autoreset(world, size):
+    """Keep the old VectorEnv workaround without requiring its legacy API."""
+    pool = getattr(world.envs, "unwrapped", world.envs)
+    if hasattr(pool, "_autoreset_envs"):
+        pool._autoreset_envs = np.zeros((size,), dtype=bool)
+
 def restore_world_from_chunks(world, chunks, task_restore=None):
     """Reset worlds using state/proprio, or a task adapter in data config."""
     seeds = []
@@ -280,8 +292,7 @@ def restore_world_from_chunks(world, chunks, task_restore=None):
         seed = chunk.get("seed")
         seeds.append(None if seed is None else int(np.asarray(seed[0])))
     world.reset(seed=seeds, options={})
-    for env, chunk in zip(world.envs.unwrapped.envs, chunks):
-        base = env.unwrapped
+    for base, chunk in zip(_base_envs(world), chunks):
         # State takes precedence; TwoRooms falls back to proprio automatically.
         if _restore_from_state_or_proprio(base, chunk):
             continue
@@ -326,8 +337,8 @@ def _keep_reacher_rollout_continuous(world, task_restore):
         for callable_cfg in (task_restore or ())
     ):
         return
-    for env in world.envs.unwrapped.envs:
-        dm_control_env = getattr(env.unwrapped, "env", None)
+    for base in _base_envs(world):
+        dm_control_env = getattr(base, "env", None)
         if hasattr(dm_control_env, "_reset_next_step"):
             dm_control_env._reset_next_step = False
 
@@ -379,9 +390,7 @@ def _rollout_worker_main(
                             world.truncateds,
                             world.infos,
                         ) = result
-                        world.envs.unwrapped._autoreset_envs = np.zeros(
-                            (shard_size,), dtype=bool
-                        )
+                        _disable_legacy_envpool_autoreset(world, shard_size)
                     segment_frames.append(np.asarray(world.infos["pixels"][:, -1]).copy())
                 result_queue.put((
                     "ok",
@@ -533,7 +542,7 @@ def simulator_targets(
             _keep_reacher_rollout_continuous(world, task_restore)
             result = world.envs.step(env_actions[:, segment, inner])
             world.states, world.rewards, world.terminateds, world.truncateds, world.infos = result
-            world.envs.unwrapped._autoreset_envs = np.zeros((n,), dtype=bool)
+            _disable_legacy_envpool_autoreset(world, n)
         targets.append(encode_world_pixels(runtime, world, image_tx, device))
     return torch.stack(targets, dim=1)
 
