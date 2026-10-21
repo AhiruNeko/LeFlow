@@ -338,9 +338,16 @@ def _keep_reacher_rollout_continuous(world, task_restore):
     ):
         return
     for base in _base_envs(world):
+        # Reacher is wrapped by dm_control's action_scale.Wrapper. The
+        # Environment owning _reset_next_step is therefore usually at _env.
         dm_control_env = getattr(base, "env", None)
-        if hasattr(dm_control_env, "_reset_next_step"):
-            dm_control_env._reset_next_step = False
+        seen = set()
+        while dm_control_env is not None and id(dm_control_env) not in seen:
+            seen.add(id(dm_control_env))
+            if "_reset_next_step" in vars(dm_control_env):
+                dm_control_env._reset_next_step = False
+                break
+            dm_control_env = getattr(dm_control_env, "_env", None)
 
 def _rollout_worker_main(
     worker_id,
