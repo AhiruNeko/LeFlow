@@ -1,0 +1,17 @@
+defaults:
+  - pusht
+  - _self_
+
+ablation:
+  output_dir: ${oc.env:LEFLOW_ABLATION_DIR}/outputs/pusht/evaluation
+
+eval:
+  save_artifacts: false
+
+hydra:
+  searchpath:
+    - file://${oc.env:LEFLOW_EVAL_CONFIG_DIR}
+  run:
+    dir: ${ablation.output_dir}/hydra/eval/${seed}
+  job:
+    chdir: false

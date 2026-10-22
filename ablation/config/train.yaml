@@ -1,0 +1,27 @@
+defaults:
+  - reference_guided_world_model
+  - override data: pusht
+  - _self_
+
+ablation:
+  variant: no_local
+  output_dir: ${oc.env:LEFLOW_ABLATION_DIR}/outputs/pusht/${ablation.variant}
+
+subdir: ${ablation.output_dir}/train
+output_model_name: ablation_${ablation.variant}
+staged_training:
+  generate_rollout_cache: false
+  distillation: true
+  fine_tune: true
+  distillation_lr: 1.0e-4
+  distillation_epochs: 10
+  fine_tune_lr: 3.0e-5
+  fine_tune_epochs: 25
+
+hydra:
+  searchpath:
+    - file://${oc.env:LEFLOW_TRAIN_CONFIG_DIR}
+  run:
+    dir: ${ablation.output_dir}/hydra/train/${now:%Y%m%d_%H%M%S}
+  job:
+    chdir: false

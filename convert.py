@@ -4,7 +4,6 @@ from pathlib import Path
 
 import torch
 import stable_pretraining as spt
-import stable_worldmodel as swm
 
 from jepa import JEPA
 from module import ARPredictor, Embedder, MLP
@@ -41,13 +40,12 @@ def build_model(cfg: dict) -> JEPA:
 
 
 def main() -> None:
-    cache_dir = Path(swm.data.utils.get_cache_dir(), "checkpoints/pusht")
     parser = argparse.ArgumentParser(
         description="Convert a LeWM state dict into an AutoCostModel checkpoint."
     )
-    parser.add_argument("--weights", type=Path, default=cache_dir / "latent_planner.pt")
-    parser.add_argument("--config", type=Path, default=cache_dir / "latent_planner_config.yaml")
-    parser.add_argument("--output", type=Path, default=cache_dir / "latent_planner.ckpt")
+    parser.add_argument("--weights", type=Path, required=True, help="LeWM weights.pt state dict.")
+    parser.add_argument("--config", type=Path, required=True, help="Matching LeWM config.json.")
+    parser.add_argument("--output", type=Path, required=True, help="Destination model checkpoint.")
     args = parser.parse_args()
 
     cfg = json.loads(args.config.read_text())
