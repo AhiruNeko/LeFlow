@@ -5,7 +5,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import hydra
-from omegaconf import DictConfig
+from omegaconf import DictConfig, open_dict
 
 import train_reference_guided_world_model as trainer
 from latent_planner import LatentPlannerRuntime
@@ -38,8 +38,11 @@ def training_dependencies(cfg):
 
 
 def run_training(cfg):
-    if cfg.staged_training.generate_rollout_cache:
-        raise ValueError("Ablations read an existing rollout cache; generation must stay disabled.")
+    cache_path = trainer.rollout_cache_path(cfg)
+    if not cache_path.is_file():
+        with open_dict(cfg):
+            cfg.staged_training.generate_rollout_cache = True
+        print(f"Ablation rollout cache missing; generating: {cache_path}", flush=True)
     output = Path(str(cfg.subdir)).expanduser().resolve()
     if not output.is_relative_to(ROOT / "ablation"):
         raise ValueError("Ablation outputs must stay inside the repository ablation/ directory.")

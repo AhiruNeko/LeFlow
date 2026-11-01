@@ -16,6 +16,11 @@ PLANNER_CHECKPOINT="${PLANNER_CHECKPOINT:-$STABLEWM_HOME/leflow/pusht/latent_pla
 LEWM_CHECKPOINT="${LEWM_CHECKPOINT:-$STABLEWM_HOME/pusht/lewm_object.ckpt}"
 REFERENCE_GUIDED_CHECKPOINT="${REFERENCE_GUIDED_CHECKPOINT:-$STABLEWM_HOME/reference_guided_world_model/pusht_h10_fine_tune/reference_guided_world_model_best.pt}"
 ROLLOUT_CACHE_PATH="${ROLLOUT_CACHE_PATH:-$STABLEWM_HOME/reference_guided_world_model/pusht_h10_staged_rollout_cache.h5}"
+if [[ -f "$ROLLOUT_CACHE_PATH" ]]; then
+  GENERATE_ROLLOUT_CACHE=false
+else
+  GENERATE_ROLLOUT_CACHE=true
+fi
 DATASET_NAME="${DATASET_NAME:-pusht_expert_train}"
 SEED="${SEED:-42}"
 NUM_EVAL="${NUM_EVAL:-50}"
@@ -42,7 +47,7 @@ fi
 
 print_command() { printf '%q ' "$@"; printf '\n'; }
 if [[ "${DRY_RUN:-0}" != 1 ]]; then
-  for file in "$PLANNER_CHECKPOINT" "$LEWM_CHECKPOINT" "$REFERENCE_GUIDED_CHECKPOINT" "$ROLLOUT_CACHE_PATH"; do
+  for file in "$PLANNER_CHECKPOINT" "$LEWM_CHECKPOINT" "$REFERENCE_GUIDED_CHECKPOINT"; do
     if [[ ! -f "$file" ]]; then echo "Required input is missing: $file" >&2; exit 2; fi
   done
   mkdir -p "$OUTPUT_DIR/eval"
@@ -53,7 +58,7 @@ TRAIN=("${PYTHON[@]}" -m ablation.train
   "ablation.variant=$VARIANT" "ablation.output_dir=$OUTPUT_DIR"
   "planner_checkpoint=$PLANNER_CHECKPOINT" "lewm_checkpoint=$LEWM_CHECKPOINT"
   "rollout_cache.path=$ROLLOUT_CACHE_PATH"
-  staged_training.generate_rollout_cache=false
+  "staged_training.generate_rollout_cache=$GENERATE_ROLLOUT_CACHE"
   staged_training.distillation=true staged_training.fine_tune=true
   "staged_training.distillation_epochs=$DISTILLATION_EPOCHS"
   "staged_training.fine_tune_epochs=$FINE_TUNE_EPOCHS"
@@ -61,7 +66,7 @@ TRAIN=("${PYTHON[@]}" -m ablation.train
   "staged_training.fine_tune_lr=$FINE_TUNE_LR"
   "loader.num_workers=$LOADER_WORKERS" "loader.batch_size=$BATCH_SIZE"
   "wandb.mode=${WANDB_MODE:-online}" "seed=$SEED" "$@")
-echo "== 1/3 Train $VARIANT: existing cache; distillation then fine-tuning =="
+echo "== 1/3 Train $VARIANT: generate_rollout_cache=$GENERATE_ROLLOUT_CACHE; distillation then fine-tuning =="
 if [[ "${DRY_RUN:-0}" == 1 ]]; then print_command "${TRAIN[@]}"; else "${TRAIN[@]}" 2>&1 | tee "$OUTPUT_DIR/train.log"; fi
 
 if [[ "${DRY_RUN:-0}" != 1 ]]; then

@@ -166,6 +166,23 @@ class AblationTests(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     wrong.from_checkpoint(path)
 
+    def test_missing_cache_enables_generation_and_existing_cache_is_reused(self):
+        with tempfile.TemporaryDirectory(dir=ABLATION) as tmp:
+            root = Path(tmp)
+            cache = root / "cache.h5"
+            with initialize_config_dir(version_base=None, config_dir=str(ABLATION / "config")):
+                cfg = compose(config_name="train", overrides=[
+                    f"ablation.output_dir={root / 'run'}",
+                    f"rollout_cache.path={cache}",
+                ])
+            with patch.object(trainer.run, "__wrapped__", side_effect=lambda config: bool(config.staged_training.generate_rollout_cache)):
+                self.assertTrue(run_training(cfg))
+                self.assertTrue(cfg.staged_training.generate_rollout_cache)
+                cache.touch()
+                cfg.staged_training.generate_rollout_cache = False
+                self.assertFalse(run_training(cfg))
+                self.assertFalse(cfg.staged_training.generate_rollout_cache)
+
     def test_original_two_stage_runner_for_all_variants(self):
         original_factory = trainer.ReferenceGuidedWorldModel
         original_step = trainer.reference_guided_training_step
