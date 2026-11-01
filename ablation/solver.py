@@ -3,6 +3,7 @@ import torch
 
 from latent_planner import LatentPlannerRuntime, LearnedLatentPathSolver, _resolve_checkpoint
 from ablation.model import AblationWorldModel
+from reference_guided_world_model import continuous_lewm_predictions
 
 
 class AblationPlannerRuntime(LatentPlannerRuntime):
@@ -12,10 +13,12 @@ class AblationPlannerRuntime(LatentPlannerRuntime):
         horizon = length - 1
         if actions.shape[:3] != (batch, samples, horizon):
             raise ValueError("Candidate actions and paths do not align.")
-        output = reference_guided_model(
-            paths.reshape(batch * samples, length, dim),
-            actions.reshape(batch * samples, horizon, actions.size(-1)),
-        )["trajectory"]
+        flat_paths = paths.reshape(batch * samples, length, dim)
+        flat_actions = actions.reshape(batch * samples, horizon, actions.size(-1))
+        condition = None
+        if reference_guided_model.variant == "continuous_condition":
+            condition = continuous_lewm_predictions(self.lewm, flat_paths, flat_actions)
+        output = reference_guided_model(flat_paths, flat_actions, condition)["trajectory"]
         return output.reshape(batch, samples, horizon, dim)
 
 

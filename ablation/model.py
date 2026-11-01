@@ -7,7 +7,7 @@ import torch
 
 from reference_guided_world_model import ReferenceGuidedWorldModel
 
-VARIANTS = ("no_local", "endpoints_actions")
+VARIANTS = ("no_local", "endpoints_actions", "continuous_condition")
 
 
 class AblationWorldModel(ReferenceGuidedWorldModel):
@@ -17,14 +17,21 @@ class AblationWorldModel(ReferenceGuidedWorldModel):
         super().__init__(*args, **kwargs)
         if self.variant not in VARIANTS:
             raise ValueError("Instantiate a concrete ablation model.")
-        # Remove the entire local branch, including its learned biases. Keeping
-        # these keys out of the state dict also prevents accidental full-model
-        # loading by the original strict checkpoint reader.
-        del self.local_prediction_projection
-        del self.local_residual_projection
-        del self.local_film
+        if self.variant == "continuous_condition":
+            # Keep the full architecture, but reject this checkpoint in the
+            # original loader, which expects independent local predictions.
+            self.register_buffer("_ablation_continuous_condition", torch.tensor(1, dtype=torch.uint8))
+        else:
+            # Removed inputs cannot leak through learned local biases.
+            del self.local_prediction_projection
+            del self.local_residual_projection
+            del self.local_film
 
     def forward(self, reference_path, actions, local_predictions=None):
+        if self.variant == "continuous_condition":
+            if local_predictions is None:
+                raise ValueError("Continuous LeWM predictions are required.")
+            return super().forward(reference_path, actions, local_predictions)
         # local_predictions is accepted for API compatibility, never consumed.
         if reference_path.ndim != 3 or actions.ndim != 3:
             raise ValueError("Expected [B,H+1,Dz] paths and [B,H,Da] actions.")
@@ -80,21 +87,32 @@ class EndpointsActionsModel(AblationWorldModel):
     variant = "endpoints_actions"
 
 
+class ContinuousConditionModel(AblationWorldModel):
+    variant = "continuous_condition"
+
+
 def model_class(variant):
-    models = {"no_local": NoLocalReferenceModel, "endpoints_actions": EndpointsActionsModel}
+    models = {
+        "no_local": NoLocalReferenceModel,
+        "endpoints_actions": EndpointsActionsModel,
+        "continuous_condition": ContinuousConditionModel,
+    }
     if variant not in models:
         raise ValueError(f"Expected an ablation checkpoint/variant in {VARIANTS}; got {variant!r}.")
     return models[variant]
 
 
 def training_step(model, frozen_lewm, reference_path, actions, executed_trajectory):
-    """Keep equal-weight full-path MSE, without running local LeWM inference."""
-    from reference_guided_world_model import continuous_trajectory_loss
+    """Keep equal-weight full-path MSE with variant-specific LeWM input."""
+    from reference_guided_world_model import continuous_lewm_predictions, continuous_trajectory_loss
 
-    output = model(reference_path, actions)
+    condition = None
+    if model.variant == "continuous_condition":
+        condition = continuous_lewm_predictions(frozen_lewm, reference_path, actions)
+    output = model(reference_path, actions, condition)
     return {
         "loss": continuous_trajectory_loss(output["trajectory"], executed_trajectory),
         "trajectory": output["trajectory"],
-        "local_predictions": None,
-        "local_residual": None,
+        "local_predictions": output["local_predictions"],
+        "local_residual": output["local_residual"],
     }

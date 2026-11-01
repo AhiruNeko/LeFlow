@@ -3,9 +3,9 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd -- "$SCRIPT_DIR/../.." && pwd)"
-VARIANT="${1:?Expected no_local or endpoints_actions}"
+VARIANT="${1:?Expected no_local, endpoints_actions, or continuous_condition}"
 shift
-case "$VARIANT" in no_local|endpoints_actions) ;; *) echo "Unknown ablation: $VARIANT" >&2; exit 2 ;; esac
+case "$VARIANT" in no_local|endpoints_actions|continuous_condition) ;; *) echo "Unknown ablation: $VARIANT" >&2; exit 2 ;; esac
 cd "$REPO_ROOT"
 export PYTHONDONTWRITEBYTECODE=1
 export HYDRA_FULL_ERROR=1

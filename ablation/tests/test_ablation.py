@@ -12,11 +12,11 @@ import torch
 from hydra import compose, initialize_config_dir
 from omegaconf import OmegaConf
 
-from ablation.model import AblationWorldModel, EndpointsActionsModel, NoLocalReferenceModel, training_step
+from ablation.model import AblationWorldModel, ContinuousConditionModel, EndpointsActionsModel, NoLocalReferenceModel, training_step
 from ablation.solver import AblationPlannerRuntime, AblationLatentPathSolver
 from ablation.train import run_training
 from ablation.analyze import measure_task, save_reports
-from reference_guided_world_model import ReferenceGuidedWorldModel
+from reference_guided_world_model import ReferenceGuidedWorldModel, continuous_lewm_predictions
 import train_reference_guided_world_model as trainer
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -103,6 +103,38 @@ class AblationTests(unittest.TestCase):
         for name, weight in ablated.state_dict().items():
             torch.testing.assert_close(weight, full.state_dict()[name], rtol=0, atol=0)
 
+    def test_continuous_condition_is_the_distillation_teacher_and_has_gradients(self):
+        lewm = ToyLeWM().eval()
+        model = ContinuousConditionModel(12, 2, 4)
+        teacher = continuous_lewm_predictions(lewm, self.path, self.actions)
+        output = training_step(model, lewm, self.path, self.actions, teacher)
+        torch.testing.assert_close(output["local_predictions"], teacher)
+        torch.testing.assert_close(output["local_residual"], teacher - self.path[:, 1:])
+        output["loss"].backward()
+        self.assertGreater(float(model.local_prediction_projection[1].weight.grad.abs().sum()), 0.0)
+        self.assertGreater(float(model.trajectory_decoder[-1].weight.grad.abs().sum()), 0.0)
+        with self.assertRaises(ValueError):
+            model(self.path, self.actions)
+        with torch.no_grad():
+            changed = model(self.path, self.actions, teacher + 5)["trajectory"]
+        self.assertFalse(torch.equal(output["trajectory"].detach(), changed))
+
+    def test_continuous_condition_solver_and_checkpoint(self):
+        model = ContinuousConditionModel(12, 2, 4).eval()
+        runtime = AblationPlannerRuntime(ToyLeWM().eval(), torch.nn.Linear(12, 12), torch.nn.Linear(12, 2), 1)
+        paths = self.path[:, None].expand(-1, 2, -1, -1)
+        actions = self.actions[:, None].expand(-1, 2, -1, -1)
+        predicted = runtime.reference_guided_rollout_paths(model, paths, actions)
+        condition = continuous_lewm_predictions(runtime.lewm, self.path, self.actions)
+        torch.testing.assert_close(predicted[:, 0], model(self.path, self.actions, condition)["trajectory"])
+        with tempfile.TemporaryDirectory(dir=ABLATION) as tmp:
+            checkpoint = Path(tmp) / "continuous.pt"
+            trainer.checkpoint(model, OmegaConf.create({"ablation": {"variant": model.variant}}), checkpoint, {})
+            restored = AblationWorldModel.from_checkpoint(checkpoint)
+            self.assertIsInstance(restored, ContinuousConditionModel)
+            torch.testing.assert_close(restored(self.path, self.actions, condition)["trajectory"], predicted[:, 0])
+            with self.assertRaises(RuntimeError):
+                ReferenceGuidedWorldModel.from_checkpoint(checkpoint)
     def test_step_has_gradients_and_does_not_call_lewm(self):
         model = NoLocalReferenceModel(12, 2, 4)
         output = training_step(model, object(), self.path, self.actions, torch.randn(2, 4, 12))
@@ -134,10 +166,10 @@ class AblationTests(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     wrong.from_checkpoint(path)
 
-    def test_original_two_stage_runner_for_both_variants(self):
+    def test_original_two_stage_runner_for_all_variants(self):
         original_factory = trainer.ReferenceGuidedWorldModel
         original_step = trainer.reference_guided_training_step
-        for variant in ("no_local", "endpoints_actions"):
+        for variant in ("no_local", "endpoints_actions", "continuous_condition"):
             with tempfile.TemporaryDirectory(dir=ABLATION) as tmp:
                 root = Path(tmp)
                 planner = root / "planner.pt"

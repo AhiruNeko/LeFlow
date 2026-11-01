@@ -84,13 +84,15 @@ class ThreeWayEvaluator:
         )
         path, action = paths[0], actions[0]
         local = parallel_segment_predictions(self.runtime.lewm, path, action)
+        continuous = continuous_lewm_predictions(
+            self.runtime.lewm, path, action, history_size=self.args.history_size
+        )
+        condition = continuous if self.ablation.variant == "continuous_condition" else None
         return {
             "target": target, "goal": goal.expand(self.args.candidates, -1),
-            "lewm": continuous_lewm_predictions(
-                self.runtime.lewm, path, action, history_size=self.args.history_size
-            ),
+            "lewm": continuous,
             "reference_guided": self.guided(path, action, local)["trajectory"],
-            "ablation": self.ablation(path, action)["trajectory"],
+            "ablation": self.ablation(path, action, condition)["trajectory"],
         }
 
     def close(self):
