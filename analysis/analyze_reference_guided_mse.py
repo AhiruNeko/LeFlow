@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Compare autoregressive LeWM and reference-guided trajectory prediction to PushT rollouts."""
+"""Compare LeWM and reference-guided trajectory predictions to task simulator rollouts."""
 
 from __future__ import annotations
 

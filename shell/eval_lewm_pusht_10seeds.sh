@@ -4,7 +4,7 @@ set -euo pipefail
 export STABLEWM_HOME="${STABLEWM_HOME:-/root/projects/pusht}"
 export HYDRA_FULL_ERROR=1
 
-PLANNER_CHECKPOINT="${PLANNER_CHECKPOINT:-$STABLEWM_HOME/latent_planner/pusht_h10/latent_planner_h10.pt}"
+PLANNER_CHECKPOINT="${PLANNER_CHECKPOINT:-$STABLEWM_HOME/latent_planner/pusht_h20/latent_planner.pt}"
 SEEDS=(42 43 44 45 46 47 48 49 50 51)
 NUM_EVAL=50
 
@@ -19,13 +19,14 @@ times=()
 for seed in "${SEEDS[@]}"; do
   echo "===== seed=${seed} ====="
   output=$(conda run -n lewm --no-capture-output python eval.py --config-name=pusht.yaml \
+    solver.lewm_checkpoint=pusht/lewm \
     solver=latent_flow \
     policy="${PLANNER_CHECKPOINT}" \
-    plan_config.horizon=10 \
-    plan_config.receding_horizon=5 \
+    plan_config.horizon=20 \
+    plan_config.receding_horizon=20 \
     plan_config.action_block=5 \
-    eval.goal_offset_steps=25 \
-    eval.eval_budget=100 \
+    eval.goal_offset_steps=100 \
+    eval.eval_budget=200 \
     eval.num_eval="${NUM_EVAL}" \
     eval.save_artifacts=false \
     seed="${seed}" 2>&1) || {

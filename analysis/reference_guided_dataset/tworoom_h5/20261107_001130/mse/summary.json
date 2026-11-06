@@ -1,0 +1,49 @@
+{
+  "settings": {
+    "task": "tworoom",
+    "dataset_name": "/mnt/f/data/tworoom",
+    "cache_dir": null,
+    "planner_checkpoint": "/root/projects/tworooms/leflow/tworooms_h5/latent_planner.pt",
+    "reference_guided_checkpoint": "/root/projects/tworooms/reference_guided_world_model/tworooms_h5/reference_guided_world_model_best.pt",
+    "lewm_checkpoint": "/root/projects/tworooms/tworooms/tworooms_object.ckpt",
+    "samples": 500,
+    "goal_offset_steps": 25,
+    "flow_steps": 16,
+    "history_size": 3,
+    "img_size": 224,
+    "seed": 42,
+    "device": "cuda",
+    "output_dir": "analysis/reference_guided_dataset/tworoom_h5",
+    "candidates": 1
+  },
+  "model_display_names": {
+    "lewm": "LeWM",
+    "guided": "L2GWM"
+  },
+  "sample_metrics": {
+    "lewm_full_mse": {
+      "mean": 0.15491345236450435,
+      "sample_std": 0.20276417905320107,
+      "count": 500
+    },
+    "lewm_endpoint_mse": {
+      "mean": 0.21841127167642116,
+      "sample_std": 0.3242794661749983,
+      "count": 500
+    },
+    "guided_full_mse": {
+      "mean": 0.08903455796837807,
+      "sample_std": 0.16057549673530772,
+      "count": 500
+    },
+    "guided_endpoint_mse": {
+      "mean": 0.16349022044055164,
+      "sample_std": 0.27565059103787753,
+      "count": 500
+    }
+  },
+  "mean_improvement": {
+    "endpoint_mse_lewm_minus_guided": 0.05492105123586952,
+    "full_mse_lewm_minus_guided": 0.06587889439612628
+  }
+}

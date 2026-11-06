@@ -1,0 +1,46 @@
+{
+  "settings": {
+    "planner_checkpoint": "/root/projects/pusht/latent_planner/pusht_h15/latent_planner.pt",
+    "reference_guided_checkpoint": "/root/projects/pusht/reference_guided_world_model/pusht_h15/reference_guided_world_model_best.pt",
+    "lewm_checkpoint": "/root/projects/pusht/checkpoints/pusht/lewm_object.ckpt",
+    "task": "pusht",
+    "dataset_name": "pusht_expert_train",
+    "cache_dir": null,
+    "tasks": 10,
+    "candidates": 64,
+    "goal_offset_steps": 75,
+    "flow_steps": 16,
+    "history_size": 3,
+    "seed": 42,
+    "img_size": 224,
+    "device": "cuda",
+    "output_dir": "analysis/reference_guided_combined/pusht_h15"
+  },
+  "candidate_metrics": {
+    "lewm_full_mse": {
+      "mean": 0.2631965195731027,
+      "sample_std": 0.34935228150306646,
+      "count": 640
+    },
+    "lewm_endpoint_mse": {
+      "mean": 0.6409065936895786,
+      "sample_std": 0.8134486604052416,
+      "count": 640
+    },
+    "guided_full_mse": {
+      "mean": 0.10915714330767515,
+      "sample_std": 0.13673640562954498,
+      "count": 640
+    },
+    "guided_endpoint_mse": {
+      "mean": 0.2469138212123653,
+      "sample_std": 0.29466694600136517,
+      "count": 640
+    }
+  },
+  "mean_improvement": {
+    "endpoint_mse_lewm_minus_guided": 0.3939927724772133,
+    "full_mse_lewm_minus_guided": 0.15403937626542755
+  },
+  "interpretation": "Positive improvement means the reference-guided prediction is closer to the real simulator rollout."
+}

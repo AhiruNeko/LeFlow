@@ -1,0 +1,49 @@
+{
+  "settings": {
+    "task": "pusht",
+    "dataset_name": "pusht_expert_train",
+    "cache_dir": null,
+    "planner_checkpoint": "/root/projects/pusht/latent_planner/pusht_h5/latent_planner.pt",
+    "reference_guided_checkpoint": "/root/projects/pusht/reference_guided_world_model/pusht_h5/reference_guided_world_model_best.pt",
+    "lewm_checkpoint": "/root/projects/pusht/checkpoints/pusht/lewm_object.ckpt",
+    "samples": 500,
+    "goal_offset_steps": 25,
+    "flow_steps": 16,
+    "history_size": 3,
+    "img_size": 224,
+    "seed": 42,
+    "device": "cuda",
+    "output_dir": "analysis/reference_guided_dataset/pusht_h5",
+    "candidates": 1
+  },
+  "model_display_names": {
+    "lewm": "LeWM",
+    "guided": "L2GWM"
+  },
+  "sample_metrics": {
+    "lewm_full_mse": {
+      "mean": 0.04499221668299287,
+      "sample_std": 0.10603070821767996,
+      "count": 500
+    },
+    "lewm_endpoint_mse": {
+      "mean": 0.08958790616039186,
+      "sample_std": 0.21402103892216556,
+      "count": 500
+    },
+    "guided_full_mse": {
+      "mean": 0.02566819159942679,
+      "sample_std": 0.07185108675299996,
+      "count": 500
+    },
+    "guided_endpoint_mse": {
+      "mean": 0.05186701931874268,
+      "sample_std": 0.14456748778356815,
+      "count": 500
+    }
+  },
+  "mean_improvement": {
+    "endpoint_mse_lewm_minus_guided": 0.03772088684164918,
+    "full_mse_lewm_minus_guided": 0.019324025083566083
+  }
+}

@@ -23,6 +23,44 @@ TASK_PROFILES = {
         "world": {"env_name": "swm/PushT-v1"},
         "simulator_restore": None,
     },
+    "tworoom": {
+        "dataset_keys": ["pixels", "action", "proprio"],
+        "world": {"env_name": "swm/TwoRoom-v1"},
+        "simulator_restore": None,
+    },
+    "cube": {
+        "dataset_keys": [
+            "pixels", "action", "qpos", "qvel",
+            "privileged_block_0_pos", "privileged_block_0_quat",
+        ],
+        "world": {
+            "env_name": "swm/OGBCube-v0",
+            "env_type": "single",
+            "ob_type": "states",
+            "multiview": False,
+            "width": 224,
+            "height": 224,
+            "visualize_info": False,
+            "terminate_at_goal": True,
+        },
+        "simulator_restore": [
+            {
+                "method": "set_state",
+                "args": {
+                    "qpos": {"source": "qpos", "index": 0},
+                    "qvel": {"source": "qvel", "index": 0},
+                },
+            },
+            {
+                "method": "set_target_pos",
+                "args": {
+                    "cube_id": {"literal": 0},
+                    "target_pos": {"source": "privileged_block_0_pos", "index": -1},
+                    "target_quat": {"source": "privileged_block_0_quat", "index": -1},
+                },
+            },
+        ],
+    },
     "reacher": {
         "dataset_keys": ["pixels", "action", "qpos", "qvel"],
         "world": {
@@ -107,6 +145,26 @@ def make_dataset(dataset_name, cache_dir, task):
     )
 
 
+class SeededRolloutDataset:
+    """Seed simulator resets reproducibly without changing the source dataset."""
+
+    def __init__(self, dataset, seed):
+        self.dataset = dataset
+        self.seed = int(seed)
+
+    def load_chunk(self, episodes, starts, ends):
+        chunks = self.dataset.load_chunk(episodes, starts, ends)
+        seeded = []
+        for index, (episode, start, chunk) in enumerate(zip(episodes, starts, chunks)):
+            reset_seed = int(np.random.SeedSequence(
+                [self.seed, int(episode), int(start), index]
+            ).generate_state(1)[0])
+            chunk = dict(chunk)
+            chunk["seed"] = np.asarray([reset_seed], dtype=np.int64)
+            seeded.append(chunk)
+        return seeded
+
+
 def choose_tasks(dataset, count, goal_offset, seed):
     try:
         episodes = np.asarray(dataset.get_col_data("episode_idx"))
@@ -125,6 +183,9 @@ def choose_tasks(dataset, count, goal_offset, seed):
 
 def action_normalizer(dataset, device):
     actions = torch.as_tensor(dataset.get_col_data("action"), dtype=torch.float32)
+    actions = actions[torch.isfinite(actions).all(dim=1)]
+    if not len(actions):
+        raise ValueError("Dataset has no finite actions for normalization.")
     return actions.mean(0).to(device), actions.std(0).clamp_min(1e-6).to(device)
 
 
@@ -133,7 +194,7 @@ class RealCandidateEvaluator:
 
     def __init__(self, args):
         self.args, self.device = args, torch.device(args.device)
-        self.runtime = LatentPlannerRuntime.from_checkpoint(args.planner_checkpoint, device=self.device).eval()
+        self.runtime = LatentPlannerRuntime.from_checkpoint(args.planner_checkpoint, device=self.device, lewm_checkpoint=args.lewm_checkpoint).eval()
         # Do not silently use the LeWM path embedded in the planner checkpoint:
         # every analysis latent, baseline rollout, and local segment prediction
         # must use the explicit checkpoint supplied by the caller.
@@ -145,6 +206,7 @@ class RealCandidateEvaluator:
         self.task = str(args.task)
         self.profile = TASK_PROFILES[self.task]
         self.dataset = make_dataset(args.dataset_name, args.cache_dir, self.task)
+        self.rollout_dataset = SeededRolloutDataset(self.dataset, args.seed)
         # flow.max_horizon is architectural capacity (20 for the H10 planner),
         # not the horizon used to train and evaluate this checkpoint.
         planner_payload = torch.load(
@@ -181,7 +243,7 @@ class RealCandidateEvaluator:
         paths = self.runtime.sample_paths(z_start, z_goal, horizon=self.horizon, num_samples=int(self.args.candidates), flow_steps=int(self.args.flow_steps), generator=self.generator)
         actions = self.runtime.decode_actions(paths)
         target = simulator_targets(
-            self.runtime, self.world, self.dataset, np.asarray([episode]),
+            self.runtime, self.world, self.rollout_dataset, np.asarray([episode]),
             np.asarray([start]), paths, actions,
             goal_offset=int(self.args.goal_offset_steps), image_tx=self.transform,
             action_mean=self.action_mean, action_std=self.action_std,

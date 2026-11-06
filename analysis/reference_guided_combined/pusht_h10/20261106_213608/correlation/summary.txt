@@ -1,0 +1,87 @@
+Reference-guided candidate-ranking analysis
+Dataset task: pusht | dataset: pusht_expert_train
+Sampled tasks: 10 | candidates per task: 64 | goal offset: 50
+Scores are terminal-to-goal latent MSE (lower is better).
+
+Per-task results (candidates ranked within each task)
+Task 1: episode=1649, start_step=9
+  Spearman:            LeWM=0.767811  guided=0.743178
+  Pearson:             LeWM=0.674298  guided=0.728845
+  Selected true MSE:   LeWM=0.079904  guided=0.023445  oracle=0.008062
+  Selection regret:    LeWM=0.071842  guided=0.015383
+  Top-1 oracle match:  LeWM=0  guided=0
+
+Task 2: episode=14250, start_step=12
+  Spearman:            LeWM=-0.475962  guided=0.640522
+  Pearson:             LeWM=-0.389830  guided=0.661314
+  Selected true MSE:   LeWM=0.251297  guided=0.030441  oracle=0.030030
+  Selection regret:    LeWM=0.221267  guided=0.000412
+  Top-1 oracle match:  LeWM=0  guided=0
+
+Task 3: episode=1702, start_step=34
+  Spearman:            LeWM=0.781273  guided=0.198214
+  Pearson:             LeWM=0.689303  guided=0.194092
+  Selected true MSE:   LeWM=0.015517  guided=0.022823  oracle=0.008050
+  Selection regret:    LeWM=0.007467  guided=0.014773
+  Top-1 oracle match:  LeWM=0  guided=0
+
+Task 4: episode=12219, start_step=59
+  Spearman:            LeWM=-0.242720  guided=0.144872
+  Pearson:             LeWM=-0.036680  guided=0.132763
+  Selected true MSE:   LeWM=0.094946  guided=0.041886  oracle=0.020328
+  Selection regret:    LeWM=0.074618  guided=0.021558
+  Top-1 oracle match:  LeWM=0  guided=0
+
+Task 5: episode=8338, start_step=81
+  Spearman:            LeWM=0.719872  guided=0.689194
+  Pearson:             LeWM=0.790107  guided=0.623057
+  Selected true MSE:   LeWM=1.083246  guided=1.083246  oracle=0.304880
+  Selection regret:    LeWM=0.778366  guided=0.778366
+  Top-1 oracle match:  LeWM=0  guided=0
+
+Task 6: episode=8267, start_step=90
+  Spearman:            LeWM=0.503205  guided=0.373260
+  Pearson:             LeWM=0.431119  guided=0.368068
+  Selected true MSE:   LeWM=0.028352  guided=0.065694  oracle=0.010786
+  Selection regret:    LeWM=0.017566  guided=0.054909
+  Top-1 oracle match:  LeWM=0  guided=0
+
+Task 7: episode=12935, start_step=3
+  Spearman:            LeWM=0.592399  guided=0.677976
+  Pearson:             LeWM=0.532490  guided=0.664218
+  Selected true MSE:   LeWM=0.074657  guided=0.034672  oracle=0.032335
+  Selection regret:    LeWM=0.042323  guided=0.002337
+  Top-1 oracle match:  LeWM=0  guided=0
+
+Task 8: episode=1866, start_step=15
+  Spearman:            LeWM=0.037912  guided=0.544597
+  Pearson:             LeWM=0.153440  guided=0.643371
+  Selected true MSE:   LeWM=0.255311  guided=0.024522  oracle=0.003848
+  Selection regret:    LeWM=0.251463  guided=0.020674
+  Top-1 oracle match:  LeWM=0  guided=0
+
+Task 9: episode=3854, start_step=96
+  Spearman:            LeWM=0.466804  guided=0.654441
+  Pearson:             LeWM=0.893519  guided=0.891514
+  Selected true MSE:   LeWM=0.070286  guided=0.023553  oracle=0.006921
+  Selection regret:    LeWM=0.063365  guided=0.016633
+  Top-1 oracle match:  LeWM=0  guided=0
+
+Task 10: episode=16015, start_step=108
+  Spearman:            LeWM=0.822848  guided=0.792308
+  Pearson:             LeWM=0.921545  guided=0.860037
+  Selected true MSE:   LeWM=0.140670  guided=0.067530  oracle=0.019115
+  Selection regret:    LeWM=0.121555  guided=0.048415
+  Top-1 oracle match:  LeWM=0  guided=0
+
+Across-task mean +/- sample std (equal weight per task)
+  spearman: LeWM=0.397344 +/- 0.462522; guided=0.545856 +/- 0.228488
+  pearson: LeWM=0.465931 +/- 0.431671; guided=0.576728 +/- 0.260543
+  selected_true_goal_mse: LeWM=0.209419 +/- 0.317969; guided=0.141781 +/- 0.331225
+  selection_regret: LeWM=0.164983 +/- 0.230345; guided=0.097346 +/- 0.239926
+  top1_match: LeWM=0.000000 +/- 0.000000; guided=0.000000 +/- 0.000000
+  oracle_true_goal_mse: 0.044435 +/- 0.092040
+
+Global pooled candidate correlation (not the across-task mean)
+  spearman: LeWM=0.460461; guided=0.670319
+  pearson: LeWM=0.815766; guided=0.785323

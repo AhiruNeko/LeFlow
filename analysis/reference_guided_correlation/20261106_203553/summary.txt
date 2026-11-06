@@ -1,0 +1,87 @@
+Reference-guided candidate-ranking analysis
+Dataset task: pusht | dataset: pusht_expert_train
+Sampled tasks: 10 | candidates per task: 64 | goal offset: 100
+Scores are terminal-to-goal latent MSE (lower is better).
+
+Per-task results (candidates ranked within each task)
+Task 1: episode=1997, start_step=8
+  Spearman:            LeWM=0.397344  guided=0.388736
+  Pearson:             LeWM=0.355689  guided=0.401903
+  Selected true MSE:   LeWM=0.958592  guided=0.958592  oracle=0.064656
+  Selection regret:    LeWM=0.893936  guided=0.893936
+  Top-1 oracle match:  LeWM=0  guided=0
+
+Task 2: episode=14212, start_step=81
+  Spearman:            LeWM=0.490476  guided=-0.005082
+  Pearson:             LeWM=0.495176  guided=0.039332
+  Selected true MSE:   LeWM=0.358271  guided=0.595483  oracle=0.052950
+  Selection regret:    LeWM=0.305321  guided=0.542533
+  Top-1 oracle match:  LeWM=0  guided=0
+
+Task 3: episode=2052, start_step=3
+  Spearman:            LeWM=0.514469  guided=0.665980
+  Pearson:             LeWM=0.343593  guided=0.673171
+  Selected true MSE:   LeWM=1.107189  guided=0.099180  oracle=0.037085
+  Selection regret:    LeWM=1.070104  guided=0.062095
+  Top-1 oracle match:  LeWM=0  guided=0
+
+Task 4: episode=12344, start_step=44
+  Spearman:            LeWM=0.390201  guided=0.181181
+  Pearson:             LeWM=0.144151  guided=0.268146
+  Selected true MSE:   LeWM=1.098939  guided=1.098939  oracle=0.133594
+  Selection regret:    LeWM=0.965345  guided=0.965345
+  Top-1 oracle match:  LeWM=0  guided=0
+
+Task 5: episode=8843, start_step=53
+  Spearman:            LeWM=0.559112  guided=0.469551
+  Pearson:             LeWM=0.617630  guided=0.535529
+  Selected true MSE:   LeWM=2.342754  guided=0.456092  oracle=0.013360
+  Selection regret:    LeWM=2.329394  guided=0.442732
+  Top-1 oracle match:  LeWM=0  guided=0
+
+Task 6: episode=8794, start_step=54
+  Spearman:            LeWM=0.547436  guided=0.581960
+  Pearson:             LeWM=0.592857  guided=0.476419
+  Selected true MSE:   LeWM=0.513323  guided=0.551419  oracle=0.042928
+  Selection regret:    LeWM=0.470395  guided=0.508491
+  Top-1 oracle match:  LeWM=0  guided=0
+
+Task 7: episode=12982, start_step=8
+  Spearman:            LeWM=0.655174  guided=0.605174
+  Pearson:             LeWM=0.586436  guided=0.659272
+  Selected true MSE:   LeWM=0.419810  guided=0.694518  oracle=0.237063
+  Selection regret:    LeWM=0.182747  guided=0.457456
+  Top-1 oracle match:  LeWM=0  guided=0
+
+Task 8: episode=2222, start_step=2
+  Spearman:            LeWM=0.495604  guided=0.598993
+  Pearson:             LeWM=0.778344  guided=0.834260
+  Selected true MSE:   LeWM=0.038979  guided=0.229331  oracle=0.027113
+  Selection regret:    LeWM=0.011866  guided=0.202218
+  Top-1 oracle match:  LeWM=0  guided=0
+
+Task 9: episode=3961, start_step=3
+  Spearman:            LeWM=-0.079533  guided=0.238645
+  Pearson:             LeWM=0.005631  guided=0.206767
+  Selected true MSE:   LeWM=2.266037  guided=2.252924  oracle=0.389616
+  Selection regret:    LeWM=1.876421  guided=1.863308
+  Top-1 oracle match:  LeWM=0  guided=0
+
+Task 10: episode=16002, start_step=19
+  Spearman:            LeWM=0.598077  guided=0.644918
+  Pearson:             LeWM=0.504439  guided=0.674041
+  Selected true MSE:   LeWM=1.364867  guided=0.279317  oracle=0.034534
+  Selection regret:    LeWM=1.330333  guided=0.244783
+  Top-1 oracle match:  LeWM=0  guided=0
+
+Across-task mean +/- sample std (equal weight per task)
+  spearman: LeWM=0.456836 +/- 0.205368; guided=0.437005 +/- 0.229689
+  pearson: LeWM=0.442395 +/- 0.233472; guided=0.476884 +/- 0.248424
+  selected_true_goal_mse: LeWM=1.046876 +/- 0.778092; guided=0.721579 +/- 0.622267
+  selection_regret: LeWM=0.943586 +/- 0.748141; guided=0.618289 +/- 0.520999
+  top1_match: LeWM=0.000000 +/- 0.000000; guided=0.000000 +/- 0.000000
+  oracle_true_goal_mse: 0.103290 +/- 0.120861
+
+Global pooled candidate correlation (not the across-task mean)
+  spearman: LeWM=0.471807; guided=0.724195
+  pearson: LeWM=0.470212; guided=0.718131

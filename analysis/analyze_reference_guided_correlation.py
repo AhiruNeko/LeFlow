@@ -16,6 +16,51 @@ from reference_guided_real_rollout_common import (
 )
 
 
+def write_text_summary(path, args, task_rows, report):
+    """Write a readable, task-separated view of the existing analysis metrics."""
+    lines = [
+        "Reference-guided candidate-ranking analysis",
+        f"Dataset task: {args.task} | dataset: {args.dataset_name}",
+        f"Sampled tasks: {len(task_rows)} | candidates per task: {args.candidates} "
+        f"| goal offset: {args.goal_offset_steps}",
+        "Scores are terminal-to-goal latent MSE (lower is better).",
+        "",
+        "Per-task results (candidates ranked within each task)",
+    ]
+    for row in task_rows:
+        lines.extend([
+            f"Task {row['task_index'] + 1}: episode={row['episode']}, start_step={row['start_step']}",
+            f"  Spearman:            LeWM={row['lewm_spearman']:.6f}  guided={row['guided_spearman']:.6f}",
+            f"  Pearson:             LeWM={row['lewm_pearson']:.6f}  guided={row['guided_pearson']:.6f}",
+            f"  Selected true MSE:   LeWM={row['lewm_selected_true_goal_mse']:.6f}  "
+            f"guided={row['guided_selected_true_goal_mse']:.6f}  oracle={row['oracle_true_goal_mse']:.6f}",
+            f"  Selection regret:    LeWM={row['lewm_selection_regret']:.6f}  "
+            f"guided={row['guided_selection_regret']:.6f}",
+            f"  Top-1 oracle match:  LeWM={row['lewm_top1_match']}  guided={row['guided_top1_match']}",
+            "",
+        ])
+
+    lines.append("Across-task mean +/- sample std (equal weight per task)")
+    task_metrics = report["per_task_ranking_metrics"]
+    for metric in ("spearman", "pearson", "selected_true_goal_mse", "selection_regret", "top1_match"):
+        lewm, guided = task_metrics[f"lewm_{metric}"], task_metrics[f"guided_{metric}"]
+        lines.append(
+            f"  {metric}: LeWM={lewm['mean']:.6f} +/- {lewm['sample_std']:.6f}; "
+            f"guided={guided['mean']:.6f} +/- {guided['sample_std']:.6f}"
+        )
+    oracle = task_metrics["oracle_true_goal_mse"]
+    lines.append(f"  oracle_true_goal_mse: {oracle['mean']:.6f} +/- {oracle['sample_std']:.6f}")
+
+    lines.extend(["", "Global pooled candidate correlation (not the across-task mean)"])
+    global_metrics = report["global_candidate_correlation"]
+    for metric in ("spearman", "pearson"):
+        lines.append(
+            f"  {metric}: LeWM={global_metrics[f'lewm_{metric}']:.6f}; "
+            f"guided={global_metrics[f'guided_{metric}']:.6f}"
+        )
+    Path(path).write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
 def main():
     parser = parse_args_common(argparse.ArgumentParser(description=__doc__))
     args = parser.parse_args()
@@ -83,6 +128,7 @@ def main():
         "interpretation": "Higher Pearson/Spearman and top-1 match are better. Lower selected true goal MSE and selection regret are better.",
     }
     write_json(output / "summary.json", report)
+    write_text_summary(output / "summary.txt", args, task_rows, report)
 
     limit = np.percentile(np.concatenate([candidate["simulator_goal_mse"], candidate["lewm_predicted_goal_mse"], candidate["guided_predicted_goal_mse"]]), 99)
     fig, axes = plt.subplots(1, 2, figsize=(11, 4.8), sharex=True, sharey=True)
@@ -90,13 +136,22 @@ def main():
         (axes[0], "lewm_predicted_goal_mse", "Autoregressive LeWM", "#5B8FF9"),
         (axes[1], "guided_predicted_goal_mse", "Reference-guided model", "#61DDAA"),
     ):
-        axis.scatter(candidate[key], candidate["simulator_goal_mse"], s=12, alpha=0.55, color=color, edgecolors="none")
-        axis.plot([0, limit], [0, limit], "--", color="black", linewidth=1)
+        predicted = candidate[key]
+        observed = candidate["simulator_goal_mse"]
+        axis.scatter(predicted, observed, s=12, alpha=0.55, color=color, edgecolors="none")
+        axis.plot([0, limit], [0, limit], "--", color="black", linewidth=1, label="Ideal: y = x")
+        valid = np.isfinite(predicted) & np.isfinite(observed)
+        if valid.sum() >= 2 and np.ptp(predicted[valid]) > 0:
+            slope, intercept = np.polyfit(predicted[valid], observed[valid], 1)
+            x_fit = np.array([0.0, limit])
+            axis.plot(x_fit, slope * x_fit + intercept, color=color, linewidth=2,
+                      label=f"Linear fit: y = {slope:.2f}x {intercept:+.2g}")
         axis.set_xlim(0, limit)
         axis.set_ylim(0, limit)
         axis.set_title(title)
         axis.set_xlabel("Predicted terminal-to-goal MSE")
         axis.grid(alpha=0.2)
+        axis.legend(fontsize=8)
     axes[0].set_ylabel("Simulator terminal-to-goal MSE")
     fig.suptitle("Candidate score agreement with real simulator execution")
     fig.tight_layout()
