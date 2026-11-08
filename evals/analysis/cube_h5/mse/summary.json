@@ -1,0 +1,49 @@
+{
+  "settings": {
+    "task": "cube",
+    "dataset_name": "ogbench/cube_single_expert",
+    "cache_dir": null,
+    "planner_checkpoint": "/root/autodl-tmp/cube/latent_planner/cube_h5/latent_planner.pt",
+    "reference_guided_checkpoint": "/root/autodl-tmp/cube/reference_guided_world_model/cube_h5/reference_guided_world_model_best.pt",
+    "lewm_checkpoint": "/root/autodl-tmp/cube/cube/cube_object.ckpt",
+    "samples": 500,
+    "goal_offset_steps": 25,
+    "flow_steps": 16,
+    "history_size": 3,
+    "img_size": 224,
+    "seed": 42,
+    "device": "cuda",
+    "output_dir": "analysis/reference_guided_dataset/cube_h5",
+    "candidates": 1
+  },
+  "model_display_names": {
+    "lewm": "LeWM",
+    "guided": "L2GWM"
+  },
+  "sample_metrics": {
+    "lewm_full_mse": {
+      "mean": 0.02093343583494425,
+      "sample_std": 0.03173657906671308,
+      "count": 500
+    },
+    "lewm_endpoint_mse": {
+      "mean": 0.0428811164284125,
+      "sample_std": 0.07934386041061786,
+      "count": 500
+    },
+    "guided_full_mse": {
+      "mean": 0.012690307133365423,
+      "sample_std": 0.01891251920234225,
+      "count": 500
+    },
+    "guided_endpoint_mse": {
+      "mean": 0.02482558755367063,
+      "sample_std": 0.04555570905579281,
+      "count": 500
+    }
+  },
+  "mean_improvement": {
+    "endpoint_mse_lewm_minus_guided": 0.018055528874741867,
+    "full_mse_lewm_minus_guided": 0.008243128701578827
+  }
+}

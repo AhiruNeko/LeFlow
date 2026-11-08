@@ -1,0 +1,175 @@
+{
+  "settings": {
+    "planner_checkpoint": "/root/autodl-tmp/pusht/leflow/pusht/latent_planner_h10.pt",
+    "reference_guided_checkpoint": "/root/autodl-tmp/pusht/reference_guided_world_model/pusht_h10_fine_tune/reference_guided_world_model_best.pt",
+    "lewm_checkpoint": "/root/autodl-tmp/pusht/pusht/lewm_object.ckpt",
+    "task": "pusht",
+    "dataset_name": "pusht_expert_train",
+    "cache_dir": null,
+    "tasks": 10,
+    "candidates": 64,
+    "goal_offset_steps": 50,
+    "flow_steps": 16,
+    "history_size": 3,
+    "seed": 42,
+    "img_size": 224,
+    "device": "cuda",
+    "output_dir": "/root/autodl-tmp/LeFlow/ablation/outputs/pusht/no_local/20261023_020127/analysis",
+    "ablation_checkpoint": "/root/autodl-tmp/LeFlow/ablation/outputs/pusht/no_local/20261023_020127/train/ablation_no_local_best.pt"
+  },
+  "candidate_metrics": {
+    "simulator_goal_mse": {
+      "mean": 0.4495945825416129,
+      "sample_std": 0.6370527635707346,
+      "count": 640
+    },
+    "lewm_full_mse": {
+      "mean": 0.11597410799149657,
+      "sample_std": 0.16949015774533058,
+      "count": 640
+    },
+    "lewm_final_mse": {
+      "mean": 0.2998400282813236,
+      "sample_std": 0.39690990170774604,
+      "count": 640
+    },
+    "lewm_goal_mse": {
+      "mean": 0.4654851777653676,
+      "sample_std": 0.6356337931340674,
+      "count": 640
+    },
+    "reference_guided_full_mse": {
+      "mean": 0.08831472236779518,
+      "sample_std": 0.13491001156196775,
+      "count": 640
+    },
+    "reference_guided_final_mse": {
+      "mean": 0.2114838718669489,
+      "sample_std": 0.34705125836611067,
+      "count": 640
+    },
+    "reference_guided_goal_mse": {
+      "mean": 0.2805010280048009,
+      "sample_std": 0.3840638827034512,
+      "count": 640
+    },
+    "ablation_full_mse": {
+      "mean": 0.1193299677419418,
+      "sample_std": 0.18507403781755352,
+      "count": 640
+    },
+    "ablation_final_mse": {
+      "mean": 0.27311872753634814,
+      "sample_std": 0.3881987161587978,
+      "count": 640
+    },
+    "ablation_goal_mse": {
+      "mean": 0.2329722582071554,
+      "sample_std": 0.2612680705655655,
+      "count": 640
+    }
+  },
+  "global_goal_error_correlation": {
+    "lewm": {
+      "pearson": 0.8320719416890116,
+      "spearman": 0.4660261621732476
+    },
+    "reference_guided": {
+      "pearson": 0.7752839096723003,
+      "spearman": 0.6803552987189911
+    },
+    "ablation": {
+      "pearson": 0.7217548232029257,
+      "spearman": 0.538875445862905
+    }
+  },
+  "per_task_ranking": {
+    "lewm_pearson": {
+      "mean": 0.4977894804158643,
+      "sample_std": 0.3622112512947483,
+      "count": 10
+    },
+    "lewm_spearman": {
+      "mean": 0.4031364468864468,
+      "sample_std": 0.4575571188088976,
+      "count": 10
+    },
+    "lewm_selection_regret": {
+      "mean": 0.09968804894015193,
+      "sample_std": 0.09758519548120881,
+      "count": 10
+    },
+    "lewm_selected_true_goal_mse": {
+      "mean": 0.1408476872369647,
+      "sample_std": 0.16609295192750498,
+      "count": 10
+    },
+    "lewm_top1_match": {
+      "mean": 0.1,
+      "sample_std": 0.31622776601683794,
+      "count": 10
+    },
+    "reference_guided_pearson": {
+      "mean": 0.6236191493385018,
+      "sample_std": 0.1879575662986224,
+      "count": 10
+    },
+    "reference_guided_spearman": {
+      "mean": 0.57260989010989,
+      "sample_std": 0.202870473326866,
+      "count": 10
+    },
+    "reference_guided_selection_regret": {
+      "mean": 0.22978729931637645,
+      "sample_std": 0.5440421927311206,
+      "count": 10
+    },
+    "reference_guided_selected_true_goal_mse": {
+      "mean": 0.27094693910330536,
+      "sample_std": 0.6240645095063605,
+      "count": 10
+    },
+    "reference_guided_top1_match": {
+      "mean": 0.0,
+      "sample_std": 0.0,
+      "count": 10
+    },
+    "ablation_pearson": {
+      "mean": 0.45707649659908095,
+      "sample_std": 0.19781715364051694,
+      "count": 10
+    },
+    "ablation_spearman": {
+      "mean": 0.3692261904761905,
+      "sample_std": 0.2688658165041072,
+      "count": 10
+    },
+    "ablation_selection_regret": {
+      "mean": 0.2579770091921091,
+      "sample_std": 0.46069283002092504,
+      "count": 10
+    },
+    "ablation_selected_true_goal_mse": {
+      "mean": 0.2991366498172283,
+      "sample_std": 0.5385977033721014,
+      "count": 10
+    },
+    "ablation_top1_match": {
+      "mean": 0.0,
+      "sample_std": 0.0,
+      "count": 10
+    },
+    "oracle_true_goal_mse": {
+      "mean": 0.04115963717922568,
+      "sample_std": 0.08088619552948567,
+      "count": 10
+    }
+  },
+  "ablation_advantage": {
+    "lewm_minus_ablation_full_mse": -0.0033558597504452226,
+    "lewm_minus_ablation_final_mse": 0.026721300744975474,
+    "reference_guided_minus_ablation_full_mse": -0.031015245374146613,
+    "reference_guided_minus_ablation_final_mse": -0.06163485566939925
+  },
+  "interpretation": "All three models share each candidate and simulator rollout. Positive advantage favors the ablation. LeWM is continuous autoregressive inference."
+}

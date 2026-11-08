@@ -1,0 +1,49 @@
+{
+  "settings": {
+    "task": "reacher",
+    "dataset_name": "dmc/reacher",
+    "cache_dir": null,
+    "planner_checkpoint": "/root/autodl-tmp/reacher/latent_planner/reacher_h5/latent_planner.pt",
+    "reference_guided_checkpoint": "/root/autodl-tmp/reacher/reference_guided_world_model/reacher_h5/reference_guided_world_model_best.pt",
+    "lewm_checkpoint": "/root/autodl-tmp/reacher/reacher/reacher_object.ckpt",
+    "samples": 500,
+    "goal_offset_steps": 25,
+    "flow_steps": 16,
+    "history_size": 3,
+    "img_size": 224,
+    "seed": 42,
+    "device": "cuda",
+    "output_dir": "analysis/reference_guided_dataset/reacher_h5",
+    "candidates": 1
+  },
+  "model_display_names": {
+    "lewm": "LeWM",
+    "guided": "L2GWM"
+  },
+  "sample_metrics": {
+    "lewm_full_mse": {
+      "mean": 0.10022383834328502,
+      "sample_std": 0.11044713844058839,
+      "count": 500
+    },
+    "lewm_endpoint_mse": {
+      "mean": 0.11094166283402591,
+      "sample_std": 0.12949057071594924,
+      "count": 500
+    },
+    "guided_full_mse": {
+      "mean": 0.0861569816628471,
+      "sample_std": 0.09437190640432741,
+      "count": 500
+    },
+    "guided_endpoint_mse": {
+      "mean": 0.09254243926052004,
+      "sample_std": 0.10939185464874113,
+      "count": 500
+    }
+  },
+  "mean_improvement": {
+    "endpoint_mse_lewm_minus_guided": 0.018399223573505874,
+    "full_mse_lewm_minus_guided": 0.014066856680437917
+  }
+}

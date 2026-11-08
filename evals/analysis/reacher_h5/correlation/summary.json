@@ -1,0 +1,113 @@
+{
+  "settings": {
+    "task": "reacher",
+    "dataset_name": "dmc/reacher",
+    "cache_dir": null,
+    "planner_checkpoint": "/root/autodl-tmp/reacher/latent_planner/reacher_h5/latent_planner.pt",
+    "reference_guided_checkpoint": "/root/autodl-tmp/reacher/reference_guided_world_model/reacher_h5/reference_guided_world_model_best.pt",
+    "lewm_checkpoint": "/root/autodl-tmp/reacher/reacher/reacher_object.ckpt",
+    "samples": 500,
+    "goal_offset_steps": 25,
+    "flow_steps": 16,
+    "history_size": 3,
+    "img_size": 224,
+    "seed": 42,
+    "device": "cuda",
+    "output_dir": "analysis/reference_guided_dataset/reacher_h5",
+    "candidates": 1
+  },
+  "model_display_names": {
+    "lewm": "LeWM",
+    "guided": "L2GWM"
+  },
+  "method": "For each aligned latent dimension, Pearson and R² are computed across samples (or sample-step observations for the full trajectory).",
+  "endpoint_latent": {
+    "lewm": {
+      "pearson": {
+        "valid_dimensions": 192,
+        "mean": 0.9442491296071583,
+        "median": 0.9452168099919875,
+        "q25": 0.9366840043540307,
+        "q75": 0.952332966755211
+      },
+      "r2": {
+        "valid_dimensions": 192,
+        "mean": 0.8858156178115015,
+        "median": 0.8880857205063925,
+        "q25": 0.87057687095417,
+        "q75": 0.901781933984408
+      },
+      "mse": {
+        "mean": 0.11094166336197368,
+        "sample_std": 0.019731072958049746,
+        "count": 192
+      }
+    },
+    "guided": {
+      "pearson": {
+        "valid_dimensions": 192,
+        "mean": 0.9516244360559242,
+        "median": 0.9524880735540672,
+        "q25": 0.9458386710819208,
+        "q75": 0.9587083567866295
+      },
+      "r2": {
+        "valid_dimensions": 192,
+        "mean": 0.9047436495485955,
+        "median": 0.9063362630766356,
+        "q25": 0.8929622404493072,
+        "q75": 0.9185876872102403
+      },
+      "mse": {
+        "mean": 0.0925424396454837,
+        "sample_std": 0.01645267470396649,
+        "count": 192
+      }
+    }
+  },
+  "full_trajectory_latent": {
+    "lewm": {
+      "pearson": {
+        "valid_dimensions": 192,
+        "mean": 0.9490269645606065,
+        "median": 0.9494105333538789,
+        "q25": 0.942941034300347,
+        "q75": 0.9550322705508372
+      },
+      "r2": {
+        "valid_dimensions": 192,
+        "mean": 0.8971513311046798,
+        "median": 0.8979693829004078,
+        "q25": 0.885649557196382,
+        "q75": 0.9091580300898242
+      },
+      "mse": {
+        "mean": 0.1002238382085729,
+        "sample_std": 0.015601976246826675,
+        "count": 192
+      }
+    },
+    "guided": {
+      "pearson": {
+        "valid_dimensions": 192,
+        "mean": 0.9550339889291131,
+        "median": 0.9553747887533113,
+        "q25": 0.9498808364411426,
+        "q75": 0.9604796545847573
+      },
+      "r2": {
+        "valid_dimensions": 192,
+        "mean": 0.9116130442021436,
+        "median": 0.912557668600577,
+        "q25": 0.9018891569689419,
+        "q75": 0.9218817243441658
+      },
+      "mse": {
+        "mean": 0.0861569815309356,
+        "sample_std": 0.01367794082618113,
+        "count": 192
+      }
+    }
+  },
+  "standardized_plot_dimensions": 192
+}

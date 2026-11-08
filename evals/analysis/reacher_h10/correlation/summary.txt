@@ -1,0 +1,12 @@
+Direct latent prediction versus simulator execution
+LeWM vs L2GWM (the world-model component of L2G-LeFlow)
+Samples: 500
+Pearson and R²: same latent dimension across samples; undefined low-variance dimensions excluded.
+Standardized scatter: 192 dimensions with nontrivial true variance.
+
+endpoint_latent
+  LeWM: Pearson median=0.9337103899416022 (valid=192); R² median=0.8651796400282881 (valid=192)
+  L2GWM: Pearson median=0.9358428131087477 (valid=192); R² median=0.8749774965460831 (valid=192)
+full_trajectory_latent
+  LeWM: Pearson median=0.9388250175213471 (valid=192); R² median=0.8772765963255547 (valid=192)
+  L2GWM: Pearson median=0.9441745245693254 (valid=192); R² median=0.890315622568643 (valid=192)
